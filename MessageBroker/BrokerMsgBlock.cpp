@@ -88,18 +88,18 @@ bool BrokerMsgBlock::refData(unsigned int idx, std::vector<unsigned char>& out_b
 
 unsigned int BrokerMsgBlock::pushBatch(const std::vector<char>& data, const unsigned int used_buf_size, unsigned int& offset)
 {
-    static_assert(sizeof(ProducerMessage::MessageHeader) == 6, "Header Size check");
+    static_assert(sizeof(ProducerReceiver::MessageHeader) == 6, "Header Size check");
     
     std::lock_guard<std::shared_mutex> lock(smtx);
 
     if (write_state == false) return 0;
-    const size_t headerSize = sizeof(ProducerMessage::MessageHeader);
+    const size_t headerSize = sizeof(ProducerReceiver::MessageHeader);
 	unsigned int processedSize = 0;
     
 
     while (offset + headerSize <= used_buf_size) /* 공간을 확인하면서 공간이 빌 때까지 진행 */
     {
-        ProducerMessage::MessageHeader header; /* 배치 프로세스는 헤더 처리 안하고 바로 넘겨주기 때문에 헤더 때고 넣어줘야 함  */
+        ProducerReceiver::MessageHeader header; /* 배치 프로세스는 헤더 처리 안하고 바로 넘겨주기 때문에 헤더 때고 넣어줘야 함  */
         std::memcpy(&header, data.data() + offset, headerSize); /* 헤더 파싱 */
         unsigned int messageTotalSize = sizeof(header.length) + header.length;
 

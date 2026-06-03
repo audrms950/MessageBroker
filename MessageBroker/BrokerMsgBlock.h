@@ -22,12 +22,7 @@ private:
 
 private:
     std::shared_mutex smtx; /* 구성한 쓰기, 읽기 쓰레드 비율이 1 : n 이므로 shared_mutex 로 읽기를 병렬처리 하는게 좋음  */
-    std::vector<unsigned char> storage; /* 통 버퍼
-    TODO : 이걸 넘겨주고 recv에서 여기다가 직접 쓰고 idx 등록하면 더 빠를듯 (zero-copy)
-        -> 근데 위의 방식으로 했을 때 토픽 분리랑 lock 관리를 어떻게 잡아야 할지 고민 필요
-        -> max_data_cnt 만큼 쪼개서 각 파티션별로 mutex 대신 atomic 으로 짧게 잠궈서 써도 되긴 하는데 이러면 공간낭비가 너무 심함
-            이렇게까지 성능을 챙길 필요가 있을 지 의문
-    */
+    std::vector<unsigned char> storage;
     std::vector<MsgIndex>storage_idx; /* 데이터를 가져갈 인덱스 */
     bool write_state = true;
 

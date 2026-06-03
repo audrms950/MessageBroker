@@ -84,6 +84,7 @@ void MsgBroker::pushBatch(int topic, const std::vector<char>& data, const unsign
 
 	auto& dq = deque_storage[topic];
 	unsigned int useBuffer = 0;
+
 	while (useBuffer < used_buf_size)
 	{
 		/* 꽉차면 새 블록 생성해서 이어서 쓰기 */
