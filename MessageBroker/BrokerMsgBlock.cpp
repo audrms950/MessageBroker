@@ -1,4 +1,5 @@
 #include "BrokerMsgBlock.h"
+#include "ProducerReceiver.h"
 
 BrokerMsgBlock::BrokerMsgBlock(unsigned int start_offset, int current_time, unsigned int max_ref_count, unsigned int max_buffer_size, unsigned int time_to_live_sec)
     :
@@ -80,8 +81,48 @@ bool BrokerMsgBlock::refData(unsigned int idx, std::vector<unsigned char>& out_b
         last_ref_cnt.fetch_add(1, std::memory_order_relaxed);
     }
 
-
     ref(idx, out_buf);
 
     return true;
 }
+
+unsigned int BrokerMsgBlock::pushBatch(const std::vector<char>& data, const unsigned int used_buf_size, unsigned int& offset)
+{
+    static_assert(sizeof(ProducerMessage::MessageHeader) == 6, "Header Size check");
+    
+    std::lock_guard<std::shared_mutex> lock(smtx);
+
+    if (write_state == false) return 0;
+    const size_t headerSize = sizeof(ProducerMessage::MessageHeader);
+	unsigned int processedSize = 0;
+    
+
+    while (offset + headerSize <= used_buf_size) /* 공간을 확인하면서 공간이 빌 때까지 진행 */
+    {
+        ProducerMessage::MessageHeader header; /* 배치 프로세스는 헤더 처리 안하고 바로 넘겨주기 때문에 헤더 때고 넣어줘야 함  */
+        std::memcpy(&header, data.data() + offset, headerSize); /* 헤더 파싱 */
+        unsigned int messageTotalSize = sizeof(header.length) + header.length;
+
+		if (offset + messageTotalSize > used_buf_size) /* 메시지 사이즈가 남은 버퍼보다 큰 경우 -> 메시지가 완전히 들어오지 않은 경우이므로 처리 중단 */
+        {
+            break;
+        }
+
+        if (cur_buf_size + messageTotalSize > max_buf_size) /* 더이상 버퍼를 채울 수 없는 경우 */
+        {
+            write_state = false;
+            break;
+        }
+
+        unsigned int payloadOffset = offset + sizeof(header.length); /* length 필드 다음부터 payload 시작 */
+        unsigned int payloadLength = messageTotalSize - sizeof(header.length); /* length 필드 제외한 나머지 사이즈가 payload 사이즈 -> mark, topic, payload */
+
+        insert(reinterpret_cast<const unsigned char*>(data.data() + payloadOffset), payloadLength);
+        processedSize++;
+        offset += messageTotalSize;
+    }
+
+	return processedSize; /* 처리한 버퍼 사이즈 반환 */
+}
+
+

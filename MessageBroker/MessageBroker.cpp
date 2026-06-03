@@ -11,159 +11,214 @@
 
 #pragma comment(lib, "Ws2_32.lib")
 
-static void sendTestMessages(int port, int messageCount, int payloadSize)
-{
-    WSADATA wsaData;
+#include <iostream>
+#include <vector>
+#include <chrono>
+#include <cstring>
+#include <cstdint>
 
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
-    {
-        std::cerr << "Sender WSAStartup failed" << std::endl;
-        return;
-    }
+void readWorker(
+    MsgBroker* broker,
+    int topic,
+    int messageCount,
+    int threadIndex,
+    int threadCount,
+    std::atomic<unsigned int>& successCount,
+    std::atomic<unsigned int>& failCount);
 
-    SOCKET senderSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-
-    if (senderSocket == INVALID_SOCKET)
-    {
-        std::cerr << "Sender socket creation failed" << std::endl;
-        WSACleanup();
-        return;
-    }
-
-    sockaddr_in serverAddress;
-    ZeroMemory(&serverAddress, sizeof(serverAddress));
-
-    serverAddress.sin_family = AF_INET;
-    serverAddress.sin_port = htons(port);
-    inet_pton(AF_INET, "127.0.0.1", &serverAddress.sin_addr);
-
-    const uint16_t MARK = 0xABCD;
-    const uint16_t TOPIC = 1;
-
-    std::vector<unsigned char> packet(sizeof(uint16_t) * 2 + payloadSize);
-
-    std::memcpy(packet.data(), &MARK, sizeof(MARK));
-    std::memcpy(packet.data() + sizeof(uint16_t), &TOPIC, sizeof(TOPIC));
-
-    for (int i = 0; i < payloadSize; ++i)
-    {
-        packet[sizeof(uint16_t) * 2 + i] =
-            static_cast<unsigned char>('A' + (i % 26));
-    }
-
-    for (int i = 0; i < messageCount; ++i)
-    {
-        int sendResult = sendto(
-            senderSocket,
-            reinterpret_cast<const char*>(packet.data()),
-            static_cast<int>(packet.size()),
-            0,
-            reinterpret_cast<sockaddr*>(&serverAddress),
-            sizeof(serverAddress));
-
-        if (sendResult == SOCKET_ERROR)
-        {
-            std::cerr << "sendto failed: "
-                << WSAGetLastError()
-                << std::endl;
-            break;
-        }
-        else
-        {
-            if ((i + 1) % 100 == 0)
-            {
-                std::this_thread::sleep_for(std::chrono::microseconds(1));
-            }
-        }
-        
-    }
-
-    closesocket(senderSocket);
-    WSACleanup();
-}
+void engineTest();
 
 int main()
 {
-    const int PORT = 9000;
-    int MESSAGE_COUNT = 40000;
-    const int PAYLOAD_SIZE = 50;
+    engineTest();
+    return 0;
+}
 
-    try
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+void engineTest()
+{
+    constexpr int TOPIC = 1;
+    constexpr int MESSAGE_COUNT = 1000000;
+    constexpr int PAYLOAD_SIZE = 1024;
+    constexpr int BATCH_MESSAGE_COUNT = 500;
+
+    MsgBroker broker;
+
+    const unsigned int PACKET_SIZE =
+        sizeof(uint16_t) + PAYLOAD_SIZE + sizeof(uint16_t);
+
+    const unsigned int BATCH_BUFFER_SIZE =
+        PACKET_SIZE * BATCH_MESSAGE_COUNT;
+
+    std::vector<char> batchBuffer(BATCH_BUFFER_SIZE);
+
+    unsigned int curOffset = 0;
+
+    for (int i = 0; i < BATCH_MESSAGE_COUNT; ++i)
     {
-        MsgBroker broker;
-        ProducerMessage receiver(PORT);
+        uint16_t messageLength = static_cast<uint16_t>(PAYLOAD_SIZE + sizeof(uint16_t));
 
-        receiver.binding();
+        std::memcpy(
+            batchBuffer.data() + curOffset,
+            &messageLength,
+            sizeof(messageLength));
 
-        std::thread recvThread([&]()
-            {
-                receiver.recvBuf(&broker);
-            });
+        curOffset += sizeof(messageLength);
 
-        auto startTime = std::chrono::high_resolution_clock::now();
+        uint16_t mark = static_cast<uint16_t>(i);
 
-        sendTestMessages(PORT, MESSAGE_COUNT, PAYLOAD_SIZE);
+        std::memcpy(
+            batchBuffer.data() + curOffset,
+            &mark,
+            sizeof(mark));
 
-        while (broker.getStoredMessageCount() < MESSAGE_COUNT)
-        {
-            std::this_thread::yield();
-        }
+        curOffset += sizeof(mark);
 
-        auto endTime = std::chrono::high_resolution_clock::now();
+        std::memset(
+            batchBuffer.data() + curOffset,
+            'A',
+            PAYLOAD_SIZE);
 
-        auto elapsedMicroSec =
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                endTime - startTime).count();
+        curOffset += PAYLOAD_SIZE;
+    }
 
-        double elapsedSec = elapsedMicroSec / 1000000.0;
+    auto startTime = std::chrono::high_resolution_clock::now();
+
+    int sentCount = 0;
+
+    while (sentCount < MESSAGE_COUNT)
+    {
+        broker.pushBatch(TOPIC, batchBuffer, curOffset);
+        sentCount += BATCH_MESSAGE_COUNT;
+    }
+
+    auto endTime = std::chrono::high_resolution_clock::now();
+
+    double elapsedSec =
+        std::chrono::duration<double>(endTime - startTime).count();
+
+    double totalMb =
+        static_cast<double>(MESSAGE_COUNT * PACKET_SIZE) / 1024.0 / 1024.0;
+
+    double mbPerSec = totalMb / elapsedSec;
+    double msgPerSec = MESSAGE_COUNT / elapsedSec;
+
+    std::cout << "==============================" << std::endl;
+    std::cout << "Broker Only Performance Test" << std::endl;
+    std::cout << "Message Count: " << MESSAGE_COUNT << std::endl;
+    std::cout << "Payload Size: " << PAYLOAD_SIZE << " bytes" << std::endl;
+    std::cout << "Packet Size: " << PACKET_SIZE << " bytes" << std::endl;
+    std::cout << "Batch Count: " << BATCH_MESSAGE_COUNT << std::endl;
+    std::cout << "Total Size: " << totalMb << " MB" << std::endl;
+    std::cout << "Elapsed Time: " << elapsedSec << " sec" << std::endl;
+    std::cout << "Throughput: " << mbPerSec << " MB/s" << std::endl;
+    std::cout << "Message Rate: " << msgPerSec << " msg/s" << std::endl;
+    std::cout << "Stored Count: " << broker.getStoredMessageCount() << std::endl;
+    std::cout << "==============================" << std::endl;
+
+    std::vector<unsigned char> outBuffer;
+
+    MsgBroker::code result = broker.getMessage(
+        TOPIC,
+        MESSAGE_COUNT - 1,
+        outBuffer);
+
+    if (result == MsgBroker::code_ok)
+    {
+        std::cout << "Broker getMessage success. size: "
+            << outBuffer.size()
+            << std::endl;
+    }
+    else
+    {
+        std::cout << "Broker getMessage failed. code: "
+            << result
+            << std::endl;
+    }
 
 
-        MESSAGE_COUNT = broker.getStoredMessageCount();
-        size_t totalBytes =
-            static_cast<size_t>(MESSAGE_COUNT) *
-            static_cast<size_t>(PAYLOAD_SIZE + sizeof(uint16_t) * 2);
+    constexpr int READ_THREAD_COUNT = 8;
 
-        double totalMb = totalBytes / 1024.0 / 1024.0;
-        double mbPerSec = totalMb / elapsedSec;
-        double msgPerSec = MESSAGE_COUNT / elapsedSec;
+    std::atomic<unsigned int> readSuccessCount = 0;
+    std::atomic<unsigned int> readFailCount = 0;
 
-        std::cout << "==============================" << std::endl;
-        std::cout << "Performance Test Result" << std::endl;
-        std::cout << "Message Count: " << MESSAGE_COUNT << std::endl;
-        std::cout << "Payload Size: " << PAYLOAD_SIZE << " bytes" << std::endl;
-        std::cout << "Packet Size: " << PAYLOAD_SIZE + sizeof(uint16_t) * 2 << " bytes" << std::endl;
-        std::cout << "Total Size: " << totalMb << " MB" << std::endl;
-        std::cout << "Elapsed Time: " << elapsedSec << " sec" << std::endl;
-        std::cout << "Throughput: " << mbPerSec << " MB/s" << std::endl;
-        std::cout << "Message Rate: " << msgPerSec << " msg/s" << std::endl;
-        std::cout << "==============================" << std::endl;
+    std::vector<std::thread> readThreads;
 
-        std::vector<unsigned char> outBuffer;
+    auto readStartTime = std::chrono::high_resolution_clock::now();
 
-        MsgBroker::code result = broker.getMessage(1, 0, outBuffer);
+    for (int i = 0; i < READ_THREAD_COUNT; ++i)
+    {
+        readThreads.emplace_back(
+            readWorker,
+            &broker,
+            TOPIC,
+            MESSAGE_COUNT,
+            i,
+            READ_THREAD_COUNT,
+            std::ref(readSuccessCount),
+            std::ref(readFailCount));
+    }
+
+    for (auto& thread : readThreads)
+    {
+        thread.join();
+    }
+
+    auto readEndTime = std::chrono::high_resolution_clock::now();
+
+    double readElapsedSec =
+        std::chrono::duration<double>(readEndTime - readStartTime).count();
+
+    double readMsgPerSec =
+        static_cast<double>(readSuccessCount.load(std::memory_order_relaxed)) / readElapsedSec;
+
+    std::cout << "==============================" << std::endl;
+    std::cout << "Broker Read Performance Test" << std::endl;
+    std::cout << "Read Thread Count: " << READ_THREAD_COUNT << std::endl;
+    std::cout << "Read Success Count: " << readSuccessCount.load() << std::endl;
+    std::cout << "Read Fail Count: " << readFailCount.load() << std::endl;
+    std::cout << "Elapsed Time: " << readElapsedSec << " sec" << std::endl;
+    std::cout << "Read Message Rate: " << readMsgPerSec << " msg/s" << std::endl;
+    std::cout << "==============================" << std::endl;
+}
+
+
+
+void readWorker(
+    MsgBroker* broker,
+    int topic,
+    int messageCount,
+    int threadIndex,
+    int threadCount,
+    std::atomic<unsigned int>& successCount,
+    std::atomic<unsigned int>& failCount)
+{
+    std::vector<unsigned char> outBuffer;
+
+    for (int offset = threadIndex; offset < messageCount; offset += threadCount)
+    {
+        MsgBroker::code result = broker->getMessage(topic, offset, outBuffer);
 
         if (result == MsgBroker::code_ok)
         {
-            std::cout << "Broker getMessage success. size: "
-                << outBuffer.size()
-                << std::endl;
+            successCount.fetch_add(1, std::memory_order_relaxed);
         }
         else
         {
-            std::cout << "Broker getMessage failed. code: "
-                << result
-                << std::endl;
+            failCount.fetch_add(1, std::memory_order_relaxed);
         }
-
-        recvThread.detach();
-
-        std::cout << "Test finished" << std::endl;
     }
-    catch (const std::exception& ex)
-    {
-        std::cerr << ex.what() << std::endl;
-        return -1;
-    }
-
-    return 0;
 }

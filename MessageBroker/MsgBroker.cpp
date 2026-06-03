@@ -60,6 +60,45 @@ void MsgBroker::pushMessage(int topic, const std::vector<unsigned char>& data)
 	insert(topic, data);
 }
 
+void MsgBroker::pushBatch(int topic, const std::vector<char>& data, const unsigned int used_buf_size)
+{
+	std::shared_lock<std::shared_mutex> mgr_shared_lock(mtx_storage_lock);
+
+	if (deque_storage.find(topic) == deque_storage.end()) {
+		// 토픽이 없을 때만 공유 락을 일시 해제하고 '독점 락'으로 전환하여 생성
+		mgr_shared_lock.unlock();
+
+		std::unique_lock<std::shared_mutex> mgr_unique_lock(mtx_storage_lock);
+		if (deque_storage.find(topic) == deque_storage.end()) {
+			onCreateStorage(topic);
+		}
+	}
+	else {
+		// 이미 토픽이 존재한다면 조회용 공유 락을 명시적으로 해제
+		mgr_shared_lock.unlock();
+	}
+
+	// 2. 이제 맵 구조 변경 우려가 없으므로 해당 토픽의 전용 분할 락만 잡고 삽입 수행
+	auto* topicMtx = getTopicMtx(topic);
+	std::unique_lock<std::shared_mutex> write_lock(*topicMtx); 
+
+	auto& dq = deque_storage[topic];
+	unsigned int useBuffer = 0;
+	while (useBuffer < used_buf_size)
+	{
+		/* 꽉차면 새 블록 생성해서 이어서 쓰기 */
+		if (dq.back()->isFull() == true)
+		{
+			onCreateStorage(topic);
+		}
+		else
+		{
+			int processedMsgCnt = dq.back()->pushBatch(data, used_buf_size, useBuffer);
+			totalStoredMessageCount.fetch_add(processedMsgCnt, std::memory_order_relaxed);
+		}
+	}
+}
+
 MsgBroker::code MsgBroker::getMessage(int topic, unsigned int offset, std::vector<unsigned char>& out_buf)
 {
 	auto* topicMtx = getTopicMtx(topic);

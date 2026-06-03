@@ -127,55 +127,50 @@ public:
         return true;
     }
 
-    void recvBuf(MsgBroker* broker)
+    void recvBuf(MsgBroker* broker, int topic)
     {
         sockaddr_in clientAddress;
         int clientAddressSize = sizeof(clientAddress);
-		std::future<bool> worker;
+
         int recvedCnt = 0;
         unsigned int bufferIndex = 0;
         unsigned int curOffset = sizeof(uint16_t);
 
         const unsigned int BOUND_MAX_MSG_SIZE = 1024 * 1024;
-        int timeoutMs = 50;
+        const int TIMEOUT_MS = 50;
 
         setsockopt(
             socketHandle,
             SOL_SOCKET,
             SO_RCVTIMEO,
-            reinterpret_cast<const char*>(&timeoutMs),
-            sizeof(timeoutMs));
+            reinterpret_cast<const char*>(&TIMEOUT_MS),
+            sizeof(TIMEOUT_MS));
 
         std::vector<std::vector<char>> blockBuffer(
             BUFFER_COUNT,
             std::vector<char>(BLOCK_BUFFER_SIZE));
 
-        auto changeBuffer = [&]()
+        auto flushBuffer = [&]()
             {
+                if (curOffset <= sizeof(uint16_t))
+                {
+                    return;
+                }
+
+                broker->pushBatch(topic, blockBuffer[bufferIndex], curOffset - 2);
+
                 bufferIndex = (bufferIndex + 1) % BUFFER_COUNT;
                 curOffset = sizeof(uint16_t);
             };
 
         while (socketHandle != INVALID_SOCKET)
         {
-            int writableSize = BLOCK_BUFFER_SIZE - curOffset;
+            unsigned int writableSize = BLOCK_BUFFER_SIZE - curOffset;
 
             if (writableSize < BOUND_MAX_MSG_SIZE + sizeof(uint16_t))
             {
-                if (worker.valid()) worker.get();
-
-                unsigned int readyBufferIndex = bufferIndex;
-                unsigned int readySize = curOffset;
-
-                worker = std::async( std::launch::async, [&, readyBufferIndex, readySize]()
-                    {
-                        return pushBroker(
-                            broker,
-                            blockBuffer[readyBufferIndex],
-                            readySize);
-                    });
-
-                changeBuffer();
+                flushBuffer();
+                writableSize = BLOCK_BUFFER_SIZE - curOffset;
             }
 
             clientAddressSize = sizeof(clientAddress);
@@ -188,33 +183,26 @@ public:
                 reinterpret_cast<sockaddr*>(&clientAddress),
                 &clientAddressSize);
 
-
             if (bytesReceived == SOCKET_ERROR)
             {
                 int errorCode = WSAGetLastError();
 
                 if (errorCode == WSAETIMEDOUT)
                 {
-                    if (worker.valid()) worker.get();
-
-                    unsigned int readyBufferIndex = bufferIndex;
-                    unsigned int readySize = curOffset;
-
-                    worker = std::async(std::launch::async, [&, readyBufferIndex, readySize]()
-                        {
-                            return pushBroker(
-                                broker,
-                                blockBuffer[readyBufferIndex],
-                                readySize);
-                        });
-
-                    changeBuffer();
+                    flushBuffer();
                     continue;
                 }
 
                 std::cerr << "recvfrom failed: "
                     << errorCode
                     << std::endl;
+
+                continue;
+            }
+
+            if (bytesReceived <= 0)
+            {
+                continue;
             }
 
             uint16_t messageLength = static_cast<uint16_t>(bytesReceived);
@@ -225,13 +213,14 @@ public:
                 sizeof(messageLength));
 
             curOffset += bytesReceived + sizeof(uint16_t);
+            ++recvedCnt;
 
-
-    //        std::cout << "Received message from "
-    //            << ", size: "
-    //            << bytesReceived
-				//<< ", total received count: " << ++recvedCnt
-    //            << std::endl;
+            if (recvedCnt % 1000 == 0)
+            {
+                flushBuffer();
+            }
         }
+
+        flushBuffer();
     }
 };

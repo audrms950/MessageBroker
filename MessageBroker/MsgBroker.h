@@ -4,6 +4,12 @@
 #include <deque>
 #include <optional>
 #include <functional> // std::hash 사용을 위해 필요
+#include <deque>
+#include <memory>
+#include <vector>
+#include <shared_mutex>
+#include <atomic>
+#include <unordered_map>
 
 namespace BrokerConst
 {
@@ -52,6 +58,7 @@ public:
 	MsgBroker();
 	void pushMessage(int topic, const unsigned char* data, size_t length);
 	void pushMessage(int topic, const std::vector<unsigned char>& data);
+	void pushBatch(int topic, const std::vector<char>& data, const unsigned int used_buf_size);
 	code getMessage(int topic, unsigned int offset, std::vector<unsigned char>& out_buf);
 
 private:

@@ -43,8 +43,6 @@ public: /* 환경 상수*/
     const unsigned int time_to_live_sec;
     const int created_time; /* 블록 생성 시간 기록용 */
     const unsigned int start_msg_offset;
-
-
 public:
     BrokerMsgBlock(unsigned int start_offset, int current_time, unsigned int max_ref_count = 1, unsigned int max_buffer_size = 1024 * 8192, unsigned int time_to_live_sec = 3600 * 24 * 31);
 
@@ -53,6 +51,8 @@ public:
     bool push(const std::vector<unsigned char>& data);
     bool refData(unsigned int idx, std::vector<unsigned char>& out_buf);
 
+    /* 처리한 메시지 개수 반환 */
+    unsigned int pushBatch(const std::vector<char>& data, const unsigned int used_buf_size, unsigned int& offset);
 public:
     inline bool isFull()
     {
@@ -67,11 +67,17 @@ public:
     }
 
 private: /* 프리미티브 -> NO (Check, lock) 위의 호출자에서 다 보장하고 오는 것을 전제로 구성  */
+	
+
     inline void insert(const unsigned char* data, const unsigned int data_size)
     {
-		std::memcpy(&storage[cur_buf_size], data, data_size);
-
-        //storage_idx.emplace_back(cur_buf_size, data_size);
+#ifndef MEM_METHOD_COPY
+        storage.insert(storage.end(), data.begin(), data.end());
+#else
+        //std::copy(data.begin(), data.end(), storage.begin() + cur_buf_size);
+        std::memcpy(&storage[cur_buf_size], data, data_size);
+#endif
+        storage_idx.emplace_back(cur_buf_size, data_size);
         cur_data_cnt++;
         cur_buf_size += data_size;
     }
