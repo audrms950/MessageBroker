@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="MessageBroker/MessageBroker.vcxproj" Id="2d14ba1b-38cf-4a11-b8c4-fb727d5d8a7e" />
+</Solution>
