@@ -1,107 +1,163 @@
-# Message Broker (개인 학습 프로젝트)
+# Performance Benchmark
 
-Kafka의 핵심 개념을 학습하기 위해 구현 중인 경량 메시지 브로커 프로젝트입니다.
+## Test Environment
 
-## 구현 완료
+### Broker Architecture
 
-### Topic 별 메시지 블록 분리
-
-* Topic 단위로 메시지 저장 공간 분리
-* `deque` 기반 블록 관리
-
-### 메시지 저장 및 Offset 관리
-
-* 메시지 분산 저장 구현
-* Offset 증가 및 조회 기능 구현
-* Offset 안정성 검증 완료
-
-### Append-Only 저장 구조
-
-* 메시지는 수정 없이 뒤에만 추가
-* 블록 단위로 메시지 관리
-
-### 자동 복구 기능
-
-* 활성 블록이 가득 찰 경우 새로운 블록 생성
-* 메시지 저장 중 블록 전환 및 복구 검증 완료
-
-### UDP Receiver
-
-* UDP 수신 기능 구현 완료
-* 코드 정리 및 리팩토링 진행 중
+* Append-Only Storage
+* Topic 별 Block(Segment) 분리
+* Offset 기반 메시지 조회
+* Batch Insert 지원
+* Block Full 시 자동 Rollover
+* Binary Search 기반 Block 탐색
+* Memory Only Benchmark (Disk I/O 제외)
 
 ---
 
-## 개발 예정 기능
+## Write Performance
 
-### TCP Sender
+### Test Case #1
 
-* Consumer 대상 메시지 전송 기능 구현
+| Item          | Value         |
+| ------------- | ------------- |
+| Message Count | 100,000       |
+| Payload Size  | 1,024 bytes   |
+| Packet Size   | 1,028 bytes   |
+| Batch Count   | 1             |
+| Total Size    | 98.03 MB      |
+| Elapsed Time  | 0.113 sec     |
+| Throughput    | 867 MB/s      |
+| Message Rate  | 884,940 msg/s |
 
-### 데이터 만료 정책
+### Test Case #2
 
-* TTL 기반 데이터 삭제
-* 블록 단위 정리 정책 검토 중
-* Reader 보호 방식(shared_ptr, Epoch, RCU 등) 검토 예정
+| Item          | Value           |
+| ------------- | --------------- |
+| Message Count | 100,000         |
+| Payload Size  | 1,000 bytes     |
+| Packet Size   | 1,004 bytes     |
+| Batch Count   | 500             |
+| Total Size    | 95.74 MB        |
+| Elapsed Time  | 0.034 sec       |
+| Throughput    | 2,810 MB/s      |
+| Message Rate  | 2,935,690 msg/s |
 
----
+### Test Case #3
 
-## 성능 개선 TODO
-
-### 1. 병목 구간 분석
-
-현재 확인된 병목:
-
-* `pushMessage()` 내부 Lock
-
-개선 결과:
-
-* Lock 범위 조정 시 약 25% 성능 향상 확인
-
-### 2. Batch Append 지원
-
-현재:
-
-* 수신부는 Batch 처리 지원
-* 저장부(`pushMessage`)는 단건 처리만 지원
-
-개선 목표:
-
-* `pushBatchMessage()` 구현
-* Lock 횟수 감소
-* Offset 갱신 횟수 감소
-* 블록 상태 검사 횟수 감소
-
-### 3. Lock-Free Read 구조 검토
-
-현재:
-
-* Append-Only 구조
-
-검토 사항:
-
-* Reader Lock 제거
-* Published Offset 기반 조회
-* Sealed Block 읽기 최적화
-
-### 4. Write Lock 단순화
-
-현재:
-
-* Shared Lock 기반 구조
-
-검토 사항:
-
-* 일반 `mutex` 기반 단순화
-* Reader Lock-Free 전환과 병행 적용
+| Item          | Value           |
+| ------------- | --------------- |
+| Message Count | 1,000,000       |
+| Payload Size  | 1,024 bytes     |
+| Packet Size   | 1,028 bytes     |
+| Batch Count   | 500             |
+| Total Size    | 980.37 MB       |
+| Elapsed Time  | 0.420 sec       |
+| Throughput    | 2,331 MB/s      |
+| Message Rate  | 2,377,940 msg/s |
 
 ---
 
-## 학습 목표
+## Batch Performance Analysis
 
-* Kafka의 Append-Only Log 구조 이해
-* Offset 기반 메시지 관리 학습
-* Batch Processing 최적화 실험
-* Lock-Free Read 구조 실험
-* Segment/Block 기반 저장 구조 연구
-* 고성능 메시지 브로커 설계 경험 확보
+Batch Insert를 적용하지 않은 경우 약 867 MB/s 수준의 처리량을 기록하였다.
+
+Batch Insert 적용 시 약 2.3 ~ 2.8 GB/s 수준까지 처리량이 향상되었으며, 테스트 결과 Batch Count 500 ~ 1000 구간에서 가장 높은 처리량을 보였다.
+
+실험 결과 Batch 크기를 무한정 증가시키는 것이 성능 향상으로 이어지지 않았으며, 일정 크기 이상에서는 오히려 처리량이 감소하였다.
+
+이는 CPU Cache Locality, Memory Bandwidth, Block Rollover 비용 등의 영향으로 판단된다.
+
+---
+
+## Read Performance
+
+### Test Case
+
+| Item               | Value         |
+| ------------------ | ------------- |
+| Message Count      | 1,000,000     |
+| Payload Size       | 1,024 bytes   |
+| Read Thread Count  | 8             |
+| Read Success Count | 1,000,000     |
+| Read Fail Count    | 0             |
+| Elapsed Time       | 5.54 sec      |
+| Message Rate       | 180,494 msg/s |
+
+---
+
+## Read Benchmark Limitation
+
+현재 Read Benchmark는 실제 메시지를 반환하기 위해 아래와 같은 복사 작업을 수행한다.
+
+```cpp
+out_buf.assign(
+    storage.begin() + curIdx.start_offset,
+    storage.begin() + curIdx.start_offset + curIdx.length);
+```
+
+따라서 현재 측정값은 순수 조회 성능이 아닌 다음 비용이 포함된 결과이다.
+
+* Block 탐색
+* Offset 조회
+* Vector Resize
+* Memory Allocation
+* Message Copy (memcpy)
+
+테스트 기준 약 1GB 이상의 데이터를 실제로 복사하고 있으므로, 현재 Read 성능 수치는 Storage Engine 자체의 조회 성능보다 보수적으로 측정된 결과이다.
+
+---
+
+## Planned Optimization
+
+### Read Path
+
+* Shared Lock 제거 완료
+* Lock-Free Read 적용 예정
+* Ref 기반 조회 API 추가 예정
+* Zero-Copy 방식 검토
+
+예상 구조
+
+```cpp
+struct RefData
+{
+    const unsigned char* data;
+    unsigned int length;
+};
+```
+
+이를 통해 메시지 복사 없이 Storage를 직접 참조하도록 개선할 계획이다.
+
+---
+
+## Current Status
+
+### Implemented
+
+* Topic 기반 Storage 분리
+* Append-Only Storage
+* Block(Segment) Rollover
+* Offset Index
+* Batch Insert
+* Binary Search 기반 Block 탐색
+* Multi Thread Read Test
+* Offset Validation
+* Storage Recovery
+
+### In Progress
+
+* UDP Receiver
+* TCP Sender
+* TTL 기반 Segment Expire
+* Lock-Free Read
+* Batch Size Auto Tuning
+
+---
+
+## Summary
+
+현재 구현된 Broker Engine은 Append-Only 기반 Memory Storage 구조를 사용하며, Batch Insert 적용 시 약 2.3 ~ 2.8 GB/s 수준의 처리량을 기록하였다.
+
+100만 건 이상의 메시지 저장 및 조회 검증을 통과하였으며, Block Rollover 및 Offset 정합성 검증 또한 완료하였다.
+
+향후 Lock-Free Read 및 Zero-Copy 기반 Ref API를 추가하여 Read 성능을 추가 개선할 예정이다.
