@@ -1,7 +1,7 @@
 #include "BrokerMsgBlock.h"
 #include "ProducerReceiver.h"
 
-BrokerMsgBlock::BrokerMsgBlock(unsigned int start_offset, int current_time, unsigned int max_ref_count, unsigned int max_buffer_size, unsigned int time_to_live_sec)
+BrokerMsgBlock::BrokerMsgBlock(unsigned int start_offset, long long current_time, unsigned int max_ref_count, unsigned int max_buffer_size, long long time_to_live_sec)
     :
     max_buf_size(max_buffer_size), /* 기본값으로 놔뒀다면 블록 당 8MB */
     max_ref_count(max_ref_count),  /* 최대 참조 -> 블록이 꽉차고 back 데이터 참조가 max_ref_count 만큼 일어났다면 삭제 가능 */
@@ -16,19 +16,21 @@ BrokerMsgBlock::BrokerMsgBlock(unsigned int start_offset, int current_time, unsi
 #endif
 }
 
-bool BrokerMsgBlock::isDeleteAble(int cur_call_time)
+bool BrokerMsgBlock::isDeleteAble(long long cur_call_time)
 {
     std::shared_lock<std::shared_mutex> lock(smtx);
 
     // 1. TTL(만료 시간) 초과 시 무조건 삭제 가능
-    if (cur_call_time != -1 && (cur_call_time - created_time >= (int)time_to_live_sec)) {
+    if (cur_call_time != -1 && (cur_call_time - created_time >= time_to_live_sec)) {
         return true;
     }
 
     // 2. 버퍼가 꽉 찼거나 더 이상 데이터를 받지 않는 상태(state == false)이고,
     //    마지막 메시지(인덱스의 끝)까지 소비자가 약속된 횟수만큼 다 읽어갔다면 삭제 가능
-    if (!write_state || cur_buf_size >= max_buf_size) {
-        if (last_ref_cnt.load(std::memory_order_relaxed) >= max_ref_count) {
+    if (!write_state || cur_buf_size >= max_buf_size) 
+    {
+        if (last_ref_cnt.load(std::memory_order_relaxed) >= max_ref_count) 
+        {
             return true;
         }
     }
@@ -86,7 +88,7 @@ bool BrokerMsgBlock::refData(unsigned int idx, std::vector<unsigned char>& out_b
     return true;
 }
 
-unsigned int BrokerMsgBlock::pushBatch(const std::vector<char>& data, const unsigned int used_buf_size, unsigned int& offset)
+int BrokerMsgBlock::pushBatch(const std::vector<char>& data, const unsigned int used_buf_size, unsigned int& offset)
 {
     static_assert(sizeof(ProducerReceiver::MessageHeader) == 6, "Header Size check");
     
@@ -103,8 +105,15 @@ unsigned int BrokerMsgBlock::pushBatch(const std::vector<char>& data, const unsi
         std::memcpy(&header, data.data() + offset, headerSize); /* 헤더 파싱 */
         unsigned int messageTotalSize = sizeof(header.length) + header.length;
 
-		if (offset + messageTotalSize > used_buf_size) /* 메시지 사이즈가 남은 버퍼보다 큰 경우 -> 메시지가 완전히 들어오지 않은 경우이므로 처리 중단 */
+        if (header.length >= max_buf_size) /* 단일 패킷이 전체 버퍼사이즈를 넘어서는 경우 */
         {
+            processedSize = MsgBroker::error::batch_buf_out_of_bound; 
+            break;
+        }
+
+		if (offset + messageTotalSize > used_buf_size) /* 써야할 메시지가 사용한 메시지 범위를 넘어서는 경우  */
+        {
+            processedSize = MsgBroker::error::batch_buf_error; /* 메시지 정합성 에러 */
             break;
         }
 
@@ -120,6 +129,11 @@ unsigned int BrokerMsgBlock::pushBatch(const std::vector<char>& data, const unsi
         insert(reinterpret_cast<const unsigned char*>(data.data() + payloadOffset), payloadLength);
         processedSize++;
         offset += messageTotalSize;
+    }
+
+    if (processedSize == 0) /* 프로세스가 아예 진행되지 않았다는 것은 남은 버퍼가 헤더보다 작다는 뜻 */
+    {
+        write_state = false; /* 버퍼가 남아있긴 하지만 아예 채울 수 없는 경우 더이상 쓸 수 없도록 만들어줌 */
     }
 
 	return processedSize; /* 처리한 버퍼 사이즈 반환 */

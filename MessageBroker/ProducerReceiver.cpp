@@ -4,13 +4,15 @@
 #include <stdexcept>
 #include <string>
 
-ProducerReceiver::ProducerReceiver(int port, MsgBroker* broker) : port(port), socketHandle(INVALID_SOCKET), broker(broker)
+ProducerReceiver::ProducerReceiver(unsigned int topic, unsigned int port, MsgBroker* broker) :
+    topic(topic), port(port), socketHandle(INVALID_SOCKET), broker(broker)
 {
     static_assert(sizeof(MessageHeader) == 6, "MessageHeader size must be 6 bytes");
+    
+    allocatedBufferCount.fetch_add(INITIAL_BUFFER_COUNT, std::memory_order_relaxed);
 
     for (int i = 0; i < INITIAL_BUFFER_COUNT; ++i)
     {
-        allocatedBufferCount.fetch_add(1, std::memory_order_relaxed);
 		queue_ready.emplace(std::make_unique<ReceiveBuffer>());
     }
 
@@ -41,7 +43,7 @@ ProducerReceiver::~ProducerReceiver()
         socketHandle = INVALID_SOCKET;
     }
 
-    for (auto& thread : workerThreads)
+    for (auto& thread : runningThreads)
     {
         if (thread.joinable())
         {
@@ -82,14 +84,14 @@ ProducerReceiver& ProducerReceiver::binding()
 
 void ProducerReceiver::start()
 {
-    std::thread receiveThread(&ProducerReceiver::recvBuf, this, 1);
-    std::thread processThread(&ProducerReceiver::workerThread, this);
+    std::thread receiveThread(&ProducerReceiver::th_recv, this, topic);
+    std::thread processThread(&ProducerReceiver::th_worker, this);
 
-    workerThreads.push_back(std::move(receiveThread));
-    workerThreads.push_back(std::move(processThread));
+    runningThreads.push_back(std::move(receiveThread));
+    runningThreads.push_back(std::move(processThread));
 }
 
-void ProducerReceiver::recvBuf(int topic)
+void ProducerReceiver::th_recv(int topic)
 {
     unsigned long long totalRecvCount = 0;
     sockaddr_in clientAddress;
@@ -146,6 +148,7 @@ void ProducerReceiver::recvBuf(int topic)
             int errorCode = WSAGetLastError();
 
             if (errorCode == WSAETIMEDOUT) running = flushBuffer();
+            else if (errorCode == 10004) continue;
             else std::cerr << "recvfrom failed: " << errorCode << std::endl;
             
             continue;
@@ -181,7 +184,7 @@ bool ProducerReceiver::hasProcessBuffer()
     return queue_process.empty() == false;
 }
 
-void ProducerReceiver::workerThread()
+void ProducerReceiver::th_worker()
 {
     while (true)
     {
@@ -205,7 +208,7 @@ void ProducerReceiver::workerThread()
                 continue;
             }
 
-            std::cout << queue_process.size() << " buffers in process queue." << std::endl;
+            //std::cout << queue_process.size() << " buffers in process queue." << std::endl;
 
             recvOb = std::move(queue_process.front());
             queue_process.pop();

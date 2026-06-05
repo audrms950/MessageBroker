@@ -177,7 +177,7 @@ void runUdpReceiverPerformanceTest()
 
     MsgBroker broker;
 
-    ProducerReceiver receiver(PORT, &broker);
+    ProducerReceiver receiver(1, PORT, &broker);
 
     receiver
         .binding();

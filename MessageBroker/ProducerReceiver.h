@@ -9,11 +9,13 @@
 class ProducerReceiver
 {
 private: 
-    static constexpr int INITIAL_BUFFER_COUNT = 8;
+    static constexpr int INITIAL_BUFFER_COUNT = 2; /* 버퍼 풀 처리를 위해 최소 2개 보장 */
     static constexpr int MAX_BUFFER_COUNT = 16;
     static constexpr int BLOCK_BUFFER_SIZE = 1024 * 1024 * 4;
+
     static constexpr int FLUSH_MESSAGE_COUNT = 1000;
     static constexpr int FLUSH_TIMEOUT_MS = 10;
+
     static constexpr int MAX_DATAGRAM_SIZE = 1024 * 64;
 	static constexpr int MAX_PACKET_SIZE = 1024 * 8; 
 
@@ -39,8 +41,8 @@ public:
     };
 private:/* 통신관련 */
     SOCKET socketHandle = INVALID_SOCKET;
-    const int port;
-
+    const unsigned int port;
+    const unsigned int topic;
 private: 
     MsgBroker* broker;
 
@@ -52,18 +54,17 @@ private:
     std::atomic<bool> running = false;
     std::atomic<int> allocatedBufferCount = 0;
 
-	std::vector<std::thread> workerThreads;
+	std::vector<std::thread> runningThreads;
 public:
-    explicit ProducerReceiver(int port, MsgBroker* broker);
+    explicit ProducerReceiver(unsigned int topic, unsigned int port, MsgBroker* broker);
     ~ProducerReceiver();
 public:
     ProducerReceiver& binding();
 	void start();
 
 private:
-    /* TODO : 토픽 받는것도 지우고 파싱해서 분리해야 함 */
-    void recvBuf(int topic);
-	void workerThread();
+    void th_recv(int topic);
+	void th_worker();
 
 private: /* 통신 프리미티브 */
 	void socketoption();
