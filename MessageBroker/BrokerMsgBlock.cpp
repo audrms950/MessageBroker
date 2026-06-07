@@ -103,6 +103,11 @@ int BrokerMsgBlock::pushBatch(const std::vector<char>& data, const unsigned int 
     {
         ProducerReceiver::MessageHeader header; /* 배치 프로세스는 헤더 처리 안하고 바로 넘겨주기 때문에 헤더 때고 넣어줘야 함  */
         std::memcpy(&header, data.data() + offset, headerSize); /* 헤더 파싱 */
+        /* 헤더를 host endian으로 변환 */
+        header.length = header.length;
+        header.mark = ntohs(header.mark);
+        header.topic = ntohs(header.topic);
+
         unsigned int messageTotalSize = sizeof(header.length) + header.length;
 
         if (header.length >= max_buf_size) /* 단일 패킷이 전체 버퍼사이즈를 넘어서는 경우 */

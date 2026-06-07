@@ -133,11 +133,13 @@
     <ClCompile Include="MessageBroker.cpp" />
     <ClCompile Include="MsgBroker.cpp" />
     <ClCompile Include="ProducerReceiver.cpp" />
+    <ClCompile Include="TcpQueryServer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="BrokerMsgBlock.h" />
     <ClInclude Include="MsgBroker.h" />
     <ClInclude Include="ProducerReceiver.h" />
+    <ClInclude Include="TcpQueryServer.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

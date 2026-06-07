@@ -1,254 +1,163 @@
-﻿#include "ProducerReceiver.h"
-#include "MsgBroker.h"
-
-#include <iostream>
-#include <thread>
-#include <chrono>
-#include <vector>
-#include <atomic>
-#include <winsock2.h>
-#include <ws2tcpip.h>
-
-#pragma comment(lib, "Ws2_32.lib")
-
-#include <iostream>
-#include <vector>
-#include <chrono>
-#include <cstring>
-#include <cstdint>
-
-void readWorker(
-    MsgBroker* broker,
-    int topic,
-    int messageCount,
-    int threadIndex,
-    int threadCount,
-    std::atomic<unsigned int>& successCount,
-    std::atomic<unsigned int>& failCount);
-
-void engineTest();
-
+﻿#include "MsgBroker.h"
 #include "ProducerReceiver.h"
-#include "MsgBroker.h"
+#include "TcpQueryServer.h"
 
-#include <iostream>
-#include <thread>
-#include <chrono>
-#include <vector>
-#include <atomic>
-#include <cstring>
-#include <cstdint>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include <iostream>
+#include <vector>
+#include <thread>
+#include <chrono>
+#include <cstring>
+
 #pragma comment(lib, "Ws2_32.lib")
 
-void runBrokerOnlyPerformanceTest();
-void runUdpReceiverPerformanceTest();
+struct TcpQueryRequest
+{
+    uint32_t topic;
+    uint32_t offset;
+};
+
+struct TcpQueryResponseHeader
+{
+    uint32_t resultCode;
+    uint32_t payloadLength;
+};
+
+bool recvAll(SOCKET socketHandle, char* buffer, int length)
+{
+    int receivedSize = 0;
+
+    while (receivedSize < length)
+    {
+        int result = recv(
+            socketHandle,
+            buffer + receivedSize,
+            length - receivedSize,
+            0);
+
+        if (result <= 0)
+        {
+            return false;
+        }
+
+        receivedSize += result;
+    }
+
+    return true;
+}
+
+bool sendAll(SOCKET socketHandle, const char* buffer, int length)
+{
+    int sentSize = 0;
+
+    while (sentSize < length)
+    {
+        int result = send(
+            socketHandle,
+            buffer + sentSize,
+            length - sentSize,
+            0);
+
+        if (result <= 0)
+        {
+            return false;
+        }
+
+        sentSize += result;
+    }
+
+    return true;
+}
+
+struct SendHeader
+{
+	uint16_t mark;
+    uint16_t topic;
+};
 
 int main()
 {
-    runBrokerOnlyPerformanceTest();
-    runUdpReceiverPerformanceTest();
-
-    return 0;
-}
-
-void runBrokerOnlyPerformanceTest()
-{
+    constexpr int UDP_PORT = 9000;
+    constexpr int TCP_PORT = 9100;
     constexpr int TOPIC = 1;
     constexpr int MESSAGE_COUNT = 1000000;
     constexpr int PAYLOAD_SIZE = 1024;
-    constexpr int BATCH_MESSAGE_COUNT = 500;
+    constexpr auto TEST_TIMEOUT = std::chrono::seconds(10);
 
     MsgBroker broker;
 
-    const unsigned int PACKET_SIZE =
-        sizeof(uint16_t) + PAYLOAD_SIZE + sizeof(uint16_t);
-
-    const unsigned int BATCH_BUFFER_SIZE =
-        PACKET_SIZE * BATCH_MESSAGE_COUNT;
-
-    std::vector<char> batchBuffer(BATCH_BUFFER_SIZE);
-
-    unsigned int curOffset = 0;
-
-    for (int i = 0; i < BATCH_MESSAGE_COUNT; ++i)
-    {
-        uint16_t messageLength =
-            static_cast<uint16_t>(PAYLOAD_SIZE + sizeof(uint16_t));
-
-        std::memcpy(
-            batchBuffer.data() + curOffset,
-            &messageLength,
-            sizeof(messageLength));
-
-        curOffset += sizeof(messageLength);
-
-        uint16_t mark = static_cast<uint16_t>(i);
-
-        std::memcpy(
-            batchBuffer.data() + curOffset,
-            &mark,
-            sizeof(mark));
-
-        curOffset += sizeof(mark);
-
-        std::memset(
-            batchBuffer.data() + curOffset,
-            'A',
-            PAYLOAD_SIZE);
-
-        curOffset += PAYLOAD_SIZE;
-    }
-
-    auto startTime =
-        std::chrono::high_resolution_clock::now();
-
-    int sentCount = 0;
-
-    while (sentCount < MESSAGE_COUNT)
-    {
-        broker.pushBatch(
-            TOPIC,
-            batchBuffer,
-            curOffset);
-
-        sentCount += BATCH_MESSAGE_COUNT;
-    }
-
-    auto endTime =
-        std::chrono::high_resolution_clock::now();
-
-    double elapsedSec =
-        std::chrono::duration<double>(
-            endTime - startTime).count();
-
-    double totalMb =
-        static_cast<double>(MESSAGE_COUNT * PACKET_SIZE) / 1024.0 / 1024.0;
-
-    double mbPerSec = totalMb / elapsedSec;
-    double msgPerSec =
-        static_cast<double>(MESSAGE_COUNT) / elapsedSec;
-
-    std::cout << "==============================" << std::endl;
-    std::cout << "Broker Only Performance Test" << std::endl;
-    std::cout << "Message Count: " << MESSAGE_COUNT << std::endl;
-    std::cout << "Payload Size: " << PAYLOAD_SIZE << " bytes" << std::endl;
-    std::cout << "Packet Size: " << PACKET_SIZE << " bytes" << std::endl;
-    std::cout << "Batch Count: " << BATCH_MESSAGE_COUNT << std::endl;
-    std::cout << "Total Size: " << totalMb << " MB" << std::endl;
-    std::cout << "Elapsed Time: " << elapsedSec << " sec" << std::endl;
-    std::cout << "Throughput: " << mbPerSec << " MB/s" << std::endl;
-    std::cout << "Message Rate: " << msgPerSec << " msg/s" << std::endl;
-    std::cout << "Stored Count: " << broker.getStoredMessageCount() << std::endl;
-    std::cout << "==============================" << std::endl;
-
-    std::vector<unsigned char> outBuffer;
-
-    MsgBroker::code result =
-        broker.getMessage(
-            TOPIC,
-            MESSAGE_COUNT - 1,
-            outBuffer);
-
-    if (result == MsgBroker::code_ok)
-    {
-        std::cout
-            << "Broker getMessage success. size: "
-            << outBuffer.size()
-            << std::endl;
-    }
-    else
-    {
-        std::cout
-            << "Broker getMessage failed. code: "
-            << result
-            << std::endl;
-    }
-}
-
-void runUdpReceiverPerformanceTest()
-{
-    constexpr int PORT = 9000;
-    constexpr int TOPIC = 1;
-    constexpr int MESSAGE_COUNT = 100000;
-    constexpr int PAYLOAD_SIZE = 1024;
-
-    MsgBroker broker;
-
-    ProducerReceiver receiver(1, PORT, &broker);
-
-    receiver
-        .binding();
-
+    ProducerReceiver receiver(TOPIC, UDP_PORT, &broker);
+    receiver.binding();
     receiver.start();
+
+    TcpQueryServer queryServer(TCP_PORT, &broker);
+
+    if (queryServer.binding() == false)
+    {
+        std::cerr << "TCP Query Server binding failed" << std::endl;
+        return -1;
+    }
+
+    queryServer.start();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     WSADATA wsaData;
 
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
     {
-        std::cerr << "Client WSAStartup failed" << std::endl;
-        return;
+        std::cerr << "WSAStartup failed" << std::endl;
+        return -1;
     }
 
-    SOCKET clientSocket =
-        socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    SOCKET udpClientSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
-    if (clientSocket == INVALID_SOCKET)
+    if (udpClientSocket == INVALID_SOCKET)
     {
-        std::cerr << "Client socket creation failed" << std::endl;
+        std::cerr << "UDP client socket failed" << std::endl;
         WSACleanup();
-        return;
+        return -1;
     }
 
-    sockaddr_in serverAddress;
-    ZeroMemory(&serverAddress, sizeof(serverAddress));
+    sockaddr_in udpServerAddress;
+    ZeroMemory(&udpServerAddress, sizeof(udpServerAddress));
 
-    serverAddress.sin_family = AF_INET;
-    serverAddress.sin_port = htons(PORT);
-    inet_pton(AF_INET, "127.0.0.1", &serverAddress.sin_addr);
+    udpServerAddress.sin_family = AF_INET;
+    udpServerAddress.sin_port = htons(UDP_PORT);
+    inet_pton(AF_INET, "127.0.0.1", &udpServerAddress.sin_addr);
 
-    std::vector<char> sendBuffer(PAYLOAD_SIZE);
+    std::vector<char> packet(sizeof(SendHeader) + PAYLOAD_SIZE);
 
-    ProducerReceiver::MessageHeader header;
-    header.length =
-        sizeof(header.mark) +
-        sizeof(header.topic) +
-        static_cast<uint16_t>(sendBuffer.size());
-
-    header.mark = 1;
-    header.topic = TOPIC;
-
-    std::vector<char> packet(
-        sizeof(header) + sendBuffer.size());
-
-    std::memcpy(
-        packet.data(),
-        &header,
-        sizeof(header));
-
-    std::memset(
-        packet.data() + sizeof(header),
-        'A',
-        sendBuffer.size());
+    auto totalStartTime = std::chrono::high_resolution_clock::now();
+    auto sendStartTime = std::chrono::high_resolution_clock::now();
 
     int sendSuccessCount = 0;
     int sendFailCount = 0;
 
-    auto startTime =
-        std::chrono::high_resolution_clock::now();
-
     for (int i = 0; i < MESSAGE_COUNT; ++i)
     {
+        SendHeader header;
+
+        header.mark = htons(static_cast<uint16_t>(i & 0xFFFF));
+        header.topic = htons(static_cast<uint16_t>(TOPIC));
+
+        std::memcpy(packet.data(), &header, sizeof(header));
+
+        std::memset(
+            packet.data() + sizeof(header),
+            'A' + (i % 26),
+            PAYLOAD_SIZE);
+
         int sentBytes =
             sendto(
-                clientSocket,
+                udpClientSocket,
                 packet.data(),
                 static_cast<int>(packet.size()),
                 0,
-                reinterpret_cast<sockaddr*>(&serverAddress),
-                sizeof(serverAddress));
+                reinterpret_cast<sockaddr*>(&udpServerAddress),
+                sizeof(udpServerAddress));
 
         if (sentBytes == SOCKET_ERROR)
         {
@@ -260,247 +169,166 @@ void runUdpReceiverPerformanceTest()
         }
     }
 
-    auto endTime =
-        std::chrono::high_resolution_clock::now();
+    auto sendEndTime = std::chrono::high_resolution_clock::now();
 
-    double elapsedSec =
-        std::chrono::duration<double>(
-            endTime - startTime).count();
+    double sendElapsedSec =
+        std::chrono::duration<double>(sendEndTime - sendStartTime).count();
 
-    double totalMb =
-        static_cast<double>(MESSAGE_COUNT * packet.size()) / 1024.0 / 1024.0;
+    closesocket(udpClientSocket);
 
     std::cout << "==============================" << std::endl;
-    std::cout << "UDP Receiver Performance Test" << std::endl;
-    std::cout << "Message Count: " << MESSAGE_COUNT << std::endl;
-    std::cout << "Payload Size: " << PAYLOAD_SIZE << " bytes" << std::endl;
-    std::cout << "Packet Size: " << packet.size() << " bytes" << std::endl;
+    std::cout << "UDP Send Complete" << std::endl;
     std::cout << "Send Success: " << sendSuccessCount << std::endl;
     std::cout << "Send Fail: " << sendFailCount << std::endl;
-    std::cout << "Send Time: " << elapsedSec << " sec" << std::endl;
-    std::cout << "Send Rate: "
-        << static_cast<double>(sendSuccessCount) / elapsedSec
-        << " msg/s" << std::endl;
-    std::cout << "Send Throughput: "
-        << totalMb / elapsedSec
-        << " MB/s" << std::endl;
+    std::cout << "Send Time: " << sendElapsedSec << " sec" << std::endl;
+    std::cout << "Send Rate: " << sendSuccessCount / sendElapsedSec << " msg/s" << std::endl;
 
-    std::this_thread::sleep_for(
-        std::chrono::seconds(3));
+    auto storeWaitStartTime = std::chrono::high_resolution_clock::now();
+    auto storeTimeoutStartTime = std::chrono::steady_clock::now();
 
-    std::cout
-        << "Broker Stored: "
-        << broker.getStoredMessageCount()
-        << std::endl;
-
-    std::vector<unsigned char> outBuffer;
-
-    unsigned int storedCount =
-        broker.getStoredMessageCount();
-
-    if (storedCount > 0)
+    while (broker.getStoredMessageCount() < MESSAGE_COUNT &&
+        std::chrono::steady_clock::now() - storeTimeoutStartTime < TEST_TIMEOUT)
     {
-        auto result =
-            broker.getMessage(
-                TOPIC,
-                storedCount - 1,
-                outBuffer);
-
-        if (result == MsgBroker::code_ok)
-        {
-            std::cout
-                << "Last Message Size: "
-                << outBuffer.size()
-                << std::endl;
-        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+
+    auto storeWaitEndTime = std::chrono::high_resolution_clock::now();
+
+    double storeWaitElapsedSec =
+        std::chrono::duration<double>(storeWaitEndTime - storeWaitStartTime).count();
+
+    unsigned int storedCount = broker.getStoredMessageCount();
 
     std::cout << "==============================" << std::endl;
 
-    closesocket(clientSocket);
-    WSACleanup();
-}
-
-
-
-
-
-
-
-
-
-
-void engineTest()
-{
-    constexpr int TOPIC = 1;
-    constexpr int MESSAGE_COUNT = 100000;
-    constexpr int PAYLOAD_SIZE = 1024;
-    constexpr int BATCH_MESSAGE_COUNT = 500;
-
-    MsgBroker broker;
-
-    const unsigned int PACKET_SIZE =
-        sizeof(uint16_t) + PAYLOAD_SIZE + sizeof(uint16_t);
-
-    const unsigned int BATCH_BUFFER_SIZE =
-        PACKET_SIZE * BATCH_MESSAGE_COUNT;
-
-    std::vector<char> batchBuffer(BATCH_BUFFER_SIZE);
-
-    unsigned int curOffset = 0;
-
-    for (int i = 0; i < BATCH_MESSAGE_COUNT; ++i)
+    if (storedCount == MESSAGE_COUNT)
     {
-        uint16_t messageLength = static_cast<uint16_t>(PAYLOAD_SIZE + sizeof(uint16_t));
-
-        std::memcpy(
-            batchBuffer.data() + curOffset,
-            &messageLength,
-            sizeof(messageLength));
-
-        curOffset += sizeof(messageLength);
-
-        uint16_t mark = static_cast<uint16_t>(i);
-
-        std::memcpy(
-            batchBuffer.data() + curOffset,
-            &mark,
-            sizeof(mark));
-
-        curOffset += sizeof(mark);
-
-        std::memset(
-            batchBuffer.data() + curOffset,
-            'A',
-            PAYLOAD_SIZE);
-
-        curOffset += PAYLOAD_SIZE;
-    }
-
-    auto startTime = std::chrono::high_resolution_clock::now();
-
-    int sentCount = 0;
-
-    while (sentCount < MESSAGE_COUNT)
-    {
-        broker.pushBatch(TOPIC, batchBuffer, curOffset);
-        sentCount += BATCH_MESSAGE_COUNT;
-    }
-
-    auto endTime = std::chrono::high_resolution_clock::now();
-
-    double elapsedSec =
-        std::chrono::duration<double>(endTime - startTime).count();
-
-    double totalMb =
-        static_cast<double>(MESSAGE_COUNT * PACKET_SIZE) / 1024.0 / 1024.0;
-
-    double mbPerSec = totalMb / elapsedSec;
-    double msgPerSec = MESSAGE_COUNT / elapsedSec;
-
-    std::cout << "==============================" << std::endl;
-    std::cout << "Broker Only Performance Test" << std::endl;
-    std::cout << "Message Count: " << MESSAGE_COUNT << std::endl;
-    std::cout << "Payload Size: " << PAYLOAD_SIZE << " bytes" << std::endl;
-    std::cout << "Packet Size: " << PACKET_SIZE << " bytes" << std::endl;
-    std::cout << "Batch Count: " << BATCH_MESSAGE_COUNT << std::endl;
-    std::cout << "Total Size: " << totalMb << " MB" << std::endl;
-    std::cout << "Elapsed Time: " << elapsedSec << " sec" << std::endl;
-    std::cout << "Throughput: " << mbPerSec << " MB/s" << std::endl;
-    std::cout << "Message Rate: " << msgPerSec << " msg/s" << std::endl;
-    std::cout << "Stored Count: " << broker.getStoredMessageCount() << std::endl;
-    std::cout << "==============================" << std::endl;
-
-    std::vector<unsigned char> outBuffer;
-
-    MsgBroker::code result = broker.getMessage(
-        TOPIC,
-        MESSAGE_COUNT - 1,
-        outBuffer);
-
-    if (result == MsgBroker::code_ok)
-    {
-        std::cout << "Broker getMessage success. size: "
-            << outBuffer.size()
-            << std::endl;
+        std::cout << "All messages stored successfully." << std::endl;
     }
     else
     {
-        std::cout << "Broker getMessage failed. code: "
-            << result
-            << std::endl;
+        std::cout << "Timeout reached." << std::endl;
     }
 
+    std::cout << "Expected : " << MESSAGE_COUNT << std::endl;
+    std::cout << "Stored   : " << storedCount << std::endl;
+    std::cout << "Lost     : " << MESSAGE_COUNT - storedCount << std::endl;
 
-    constexpr int READ_THREAD_COUNT = 8;
+    SOCKET tcpClientSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 
-    std::atomic<unsigned int> readSuccessCount = 0;
-    std::atomic<unsigned int> readFailCount = 0;
-
-    std::vector<std::thread> readThreads;
-
-    auto readStartTime = std::chrono::high_resolution_clock::now();
-
-    for (int i = 0; i < READ_THREAD_COUNT; ++i)
+    if (tcpClientSocket == INVALID_SOCKET)
     {
-        readThreads.emplace_back(
-            readWorker,
-            &broker,
-            TOPIC,
-            MESSAGE_COUNT,
-            i,
-            READ_THREAD_COUNT,
-            std::ref(readSuccessCount),
-            std::ref(readFailCount));
+        std::cerr << "TCP client socket failed" << std::endl;
+        WSACleanup();
+        return -1;
     }
 
-    for (auto& thread : readThreads)
+    sockaddr_in tcpServerAddress;
+    ZeroMemory(&tcpServerAddress, sizeof(tcpServerAddress));
+
+    tcpServerAddress.sin_family = AF_INET;
+    tcpServerAddress.sin_port = htons(TCP_PORT);
+    inet_pton(AF_INET, "127.0.0.1", &tcpServerAddress.sin_addr);
+
+    if (connect(
+        tcpClientSocket,
+        reinterpret_cast<sockaddr*>(&tcpServerAddress),
+        sizeof(tcpServerAddress)) == SOCKET_ERROR)
     {
-        thread.join();
+        std::cerr << "TCP connect failed: " << WSAGetLastError() << std::endl;
+        closesocket(tcpClientSocket);
+        WSACleanup();
+        return -1;
     }
 
-    auto readEndTime = std::chrono::high_resolution_clock::now();
+    int querySuccessCount = 0;
+    int queryFailCount = 0;
 
-    double readElapsedSec =
-        std::chrono::duration<double>(readEndTime - readStartTime).count();
+    auto queryStartTime = std::chrono::high_resolution_clock::now();
 
-    double readMsgPerSec =
-        static_cast<double>(readSuccessCount.load(std::memory_order_relaxed)) / readElapsedSec;
-
-    std::cout << "==============================" << std::endl;
-    std::cout << "Broker Read Performance Test" << std::endl;
-    std::cout << "Read Thread Count: " << READ_THREAD_COUNT << std::endl;
-    std::cout << "Read Success Count: " << readSuccessCount.load() << std::endl;
-    std::cout << "Read Fail Count: " << readFailCount.load() << std::endl;
-    std::cout << "Elapsed Time: " << readElapsedSec << " sec" << std::endl;
-    std::cout << "Read Message Rate: " << readMsgPerSec << " msg/s" << std::endl;
-    std::cout << "==============================" << std::endl;
-}
-
-
-
-void readWorker(
-    MsgBroker* broker,
-    int topic,
-    int messageCount,
-    int threadIndex,
-    int threadCount,
-    std::atomic<unsigned int>& successCount,
-    std::atomic<unsigned int>& failCount)
-{
-    std::vector<unsigned char> outBuffer;
-
-    for (int offset = threadIndex; offset < messageCount; offset += threadCount)
+    for (unsigned int offset = 0; offset < storedCount; ++offset)
     {
-        MsgBroker::code result = broker->getMessage(topic, offset, outBuffer);
+        TcpQueryRequest request;
 
-        if (result == MsgBroker::code_ok)
+        request.topic = htonl(TOPIC);
+        request.offset = htonl(static_cast<uint32_t>(offset));
+
+        if (sendAll(
+            tcpClientSocket,
+            reinterpret_cast<const char*>(&request),
+            sizeof(request)) == false)
         {
-            successCount.fetch_add(1, std::memory_order_relaxed);
+            ++queryFailCount;
+            break;
+        }
+
+        TcpQueryResponseHeader responseHeader;
+
+        if (recvAll(
+            tcpClientSocket,
+            reinterpret_cast<char*>(&responseHeader),
+            sizeof(responseHeader)) == false)
+        {
+            ++queryFailCount;
+            break;
+        }
+
+        uint32_t resultCode = ntohl(responseHeader.resultCode);
+        uint32_t payloadLength = ntohl(responseHeader.payloadLength);
+
+        std::vector<char> responsePayload(payloadLength);
+
+        if (payloadLength > 0)
+        {
+            if (recvAll(
+                tcpClientSocket,
+                responsePayload.data(),
+                static_cast<int>(payloadLength)) == false)
+            {
+                ++queryFailCount;
+                break;
+            }
+        }
+
+        if (resultCode == MsgBroker::code_ok &&
+            payloadLength == PAYLOAD_SIZE + sizeof(uint16_t) + sizeof(uint16_t))
+        {
+            ++querySuccessCount;
         }
         else
         {
-            failCount.fetch_add(1, std::memory_order_relaxed);
+            ++queryFailCount;
         }
     }
+
+    auto queryEndTime = std::chrono::high_resolution_clock::now();
+
+    double queryElapsedSec =
+        std::chrono::duration<double>(queryEndTime - queryStartTime).count();
+
+    closesocket(tcpClientSocket);
+    WSACleanup();
+
+    auto totalEndTime = std::chrono::high_resolution_clock::now();
+
+    double totalElapsedSec =
+        std::chrono::duration<double>(totalEndTime - totalStartTime).count();
+
+    std::cout << "==============================" << std::endl;
+    std::cout << "TCP Query Complete" << std::endl;
+    std::cout << "Query Target: " << storedCount << std::endl;
+    std::cout << "Query Success: " << querySuccessCount << std::endl;
+    std::cout << "Query Fail: " << queryFailCount << std::endl;
+    std::cout << "Query Time: " << queryElapsedSec << " sec" << std::endl;
+
+    if (queryElapsedSec > 0.0)
+    {
+        std::cout << "Query Rate: " << querySuccessCount / queryElapsedSec << " msg/s" << std::endl;
+    }
+
+    std::cout << "==============================" << std::endl;
+    std::cout << "Total Time: " << totalElapsedSec << " sec" << std::endl;
+    std::cout << "==============================" << std::endl;
+
+    return 0;
 }
