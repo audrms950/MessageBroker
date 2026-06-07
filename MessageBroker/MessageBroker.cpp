@@ -10,8 +10,16 @@
 #include <thread>
 #include <chrono>
 #include <cstring>
+#include <memory>
+#include <atomic>
 
 #pragma comment(lib, "Ws2_32.lib")
+
+struct SendHeader
+{
+    uint16_t mark;
+    uint16_t topic;
+};
 
 struct TcpQueryRequest
 {
@@ -24,6 +32,7 @@ struct TcpQueryResponseHeader
     uint32_t resultCode;
     uint32_t payloadLength;
 };
+
 
 bool recvAll(SOCKET socketHandle, char* buffer, int length)
 {
@@ -71,163 +80,85 @@ bool sendAll(SOCKET socketHandle, const char* buffer, int length)
     return true;
 }
 
-struct SendHeader
+void sendUdpMessages(
+    int udpPort,
+    int topic,
+    int messageCount,
+    int payloadSize,
+    std::atomic<int>& totalSendSuccessCount,
+    std::atomic<int>& totalSendFailCount)
 {
-	uint16_t mark;
-    uint16_t topic;
-};
-
-int main()
-{
-    constexpr int UDP_PORT = 9000;
-    constexpr int TCP_PORT = 9100;
-    constexpr int TOPIC = 1;
-    constexpr int MESSAGE_COUNT = 1000000;
-    constexpr int PAYLOAD_SIZE = 1024;
-    constexpr auto TEST_TIMEOUT = std::chrono::seconds(10);
-
-    MsgBroker broker;
-
-    ProducerReceiver receiver(TOPIC, UDP_PORT, &broker);
-    receiver.binding();
-    receiver.start();
-
-    TcpQueryServer queryServer(TCP_PORT, &broker);
-
-    if (queryServer.binding() == false)
-    {
-        std::cerr << "TCP Query Server binding failed" << std::endl;
-        return -1;
-    }
-
-    queryServer.start();
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-    WSADATA wsaData;
-
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
-    {
-        std::cerr << "WSAStartup failed" << std::endl;
-        return -1;
-    }
-
     SOCKET udpClientSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
     if (udpClientSocket == INVALID_SOCKET)
     {
-        std::cerr << "UDP client socket failed" << std::endl;
-        WSACleanup();
-        return -1;
+        totalSendFailCount.fetch_add(messageCount, std::memory_order_relaxed);
+        return;
     }
 
     sockaddr_in udpServerAddress;
     ZeroMemory(&udpServerAddress, sizeof(udpServerAddress));
 
     udpServerAddress.sin_family = AF_INET;
-    udpServerAddress.sin_port = htons(UDP_PORT);
+    udpServerAddress.sin_port = htons(static_cast<u_short>(udpPort));
     inet_pton(AF_INET, "127.0.0.1", &udpServerAddress.sin_addr);
 
-    std::vector<char> packet(sizeof(SendHeader) + PAYLOAD_SIZE);
+    std::vector<char> packet(sizeof(SendHeader) + payloadSize);
 
-    auto totalStartTime = std::chrono::high_resolution_clock::now();
-    auto sendStartTime = std::chrono::high_resolution_clock::now();
-
-    int sendSuccessCount = 0;
-    int sendFailCount = 0;
-
-    for (int i = 0; i < MESSAGE_COUNT; ++i)
+    for (int i = 0; i < messageCount; ++i)
     {
         SendHeader header;
 
         header.mark = htons(static_cast<uint16_t>(i & 0xFFFF));
-        header.topic = htons(static_cast<uint16_t>(TOPIC));
+        header.topic = htons(static_cast<uint16_t>(topic));
 
         std::memcpy(packet.data(), &header, sizeof(header));
 
         std::memset(
             packet.data() + sizeof(header),
             'A' + (i % 26),
-            PAYLOAD_SIZE);
+            payloadSize);
 
-        int sentBytes =
-            sendto(
-                udpClientSocket,
-                packet.data(),
-                static_cast<int>(packet.size()),
-                0,
-                reinterpret_cast<sockaddr*>(&udpServerAddress),
-                sizeof(udpServerAddress));
+        int sentBytes = sendto(
+            udpClientSocket,
+            packet.data(),
+            static_cast<int>(packet.size()),
+            0,
+            reinterpret_cast<sockaddr*>(&udpServerAddress),
+            sizeof(udpServerAddress));
 
         if (sentBytes == SOCKET_ERROR)
         {
-            ++sendFailCount;
+            totalSendFailCount.fetch_add(1, std::memory_order_relaxed);
         }
         else
         {
-            ++sendSuccessCount;
+            totalSendSuccessCount.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
-    auto sendEndTime = std::chrono::high_resolution_clock::now();
-
-    double sendElapsedSec =
-        std::chrono::duration<double>(sendEndTime - sendStartTime).count();
-
     closesocket(udpClientSocket);
+}
 
-    std::cout << "==============================" << std::endl;
-    std::cout << "UDP Send Complete" << std::endl;
-    std::cout << "Send Success: " << sendSuccessCount << std::endl;
-    std::cout << "Send Fail: " << sendFailCount << std::endl;
-    std::cout << "Send Time: " << sendElapsedSec << " sec" << std::endl;
-    std::cout << "Send Rate: " << sendSuccessCount / sendElapsedSec << " msg/s" << std::endl;
-
-    auto storeWaitStartTime = std::chrono::high_resolution_clock::now();
-    auto storeTimeoutStartTime = std::chrono::steady_clock::now();
-
-    while (broker.getStoredMessageCount() < MESSAGE_COUNT &&
-        std::chrono::steady_clock::now() - storeTimeoutStartTime < TEST_TIMEOUT)
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-
-    auto storeWaitEndTime = std::chrono::high_resolution_clock::now();
-
-    double storeWaitElapsedSec =
-        std::chrono::duration<double>(storeWaitEndTime - storeWaitStartTime).count();
-
-    unsigned int storedCount = broker.getStoredMessageCount();
-
-    std::cout << "==============================" << std::endl;
-
-    if (storedCount == MESSAGE_COUNT)
-    {
-        std::cout << "All messages stored successfully." << std::endl;
-    }
-    else
-    {
-        std::cout << "Timeout reached." << std::endl;
-    }
-
-    std::cout << "Expected : " << MESSAGE_COUNT << std::endl;
-    std::cout << "Stored   : " << storedCount << std::endl;
-    std::cout << "Lost     : " << MESSAGE_COUNT - storedCount << std::endl;
-
+int runTcpQueryTest(
+    int tcpPort,
+    int topic,
+    unsigned int queryTarget,
+    int expectedPayloadSize)
+{
     SOCKET tcpClientSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 
     if (tcpClientSocket == INVALID_SOCKET)
     {
         std::cerr << "TCP client socket failed" << std::endl;
-        WSACleanup();
-        return -1;
+        return 0;
     }
 
     sockaddr_in tcpServerAddress;
     ZeroMemory(&tcpServerAddress, sizeof(tcpServerAddress));
 
     tcpServerAddress.sin_family = AF_INET;
-    tcpServerAddress.sin_port = htons(TCP_PORT);
+    tcpServerAddress.sin_port = htons(static_cast<u_short>(tcpPort));
     inet_pton(AF_INET, "127.0.0.1", &tcpServerAddress.sin_addr);
 
     if (connect(
@@ -237,28 +168,23 @@ int main()
     {
         std::cerr << "TCP connect failed: " << WSAGetLastError() << std::endl;
         closesocket(tcpClientSocket);
-        WSACleanup();
-        return -1;
+        return 0;
     }
 
     int querySuccessCount = 0;
-    int queryFailCount = 0;
 
-    auto queryStartTime = std::chrono::high_resolution_clock::now();
-
-    for (unsigned int offset = 0; offset < storedCount; ++offset)
+    for (unsigned int offset = 0; offset < queryTarget; ++offset)
     {
         TcpQueryRequest request;
 
-        request.topic = htonl(TOPIC);
-        request.offset = htonl(static_cast<uint32_t>(offset));
+        request.topic = htonl(static_cast<uint32_t>(topic));
+        request.offset = htonl(offset);
 
         if (sendAll(
             tcpClientSocket,
             reinterpret_cast<const char*>(&request),
             sizeof(request)) == false)
         {
-            ++queryFailCount;
             break;
         }
 
@@ -269,7 +195,6 @@ int main()
             reinterpret_cast<char*>(&responseHeader),
             sizeof(responseHeader)) == false)
         {
-            ++queryFailCount;
             break;
         }
 
@@ -285,50 +210,241 @@ int main()
                 responsePayload.data(),
                 static_cast<int>(payloadLength)) == false)
             {
-                ++queryFailCount;
                 break;
             }
         }
 
         if (resultCode == MsgBroker::code_ok &&
-            payloadLength == PAYLOAD_SIZE + sizeof(uint16_t) + sizeof(uint16_t))
+            payloadLength == expectedPayloadSize)
         {
             ++querySuccessCount;
         }
-        else
+    }
+
+    closesocket(tcpClientSocket);
+
+    return querySuccessCount;
+}
+
+unsigned int verifyTopic(
+    int tcpPort,
+    int topic,
+    unsigned int expectedCount,
+    int expectedPayloadSize)
+{
+    return runTcpQueryTest(
+        tcpPort,
+        topic,
+        expectedCount,
+        expectedPayloadSize);
+}
+
+
+int main()
+{
+    constexpr int BASE_UDP_PORT = 9000;
+    constexpr int TCP_PORT = 9100;
+    constexpr int TOPIC = 5;
+
+    constexpr int RECEIVER_COUNT = 5;
+    constexpr int TOTAL_MESSAGE_COUNT = 1000000;
+    constexpr int MESSAGE_COUNT_PER_RECEIVER = TOTAL_MESSAGE_COUNT / RECEIVER_COUNT;
+    constexpr int PAYLOAD_SIZE = 1024;
+    constexpr int MESSAGE_COUNT_PER_TOPIC =
+        TOTAL_MESSAGE_COUNT / RECEIVER_COUNT;
+
+    constexpr auto TEST_TIMEOUT = std::chrono::seconds(10);
+
+    WSADATA wsaData;
+
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+    {
+        std::cerr << "WSAStartup failed" << std::endl;
+        return -1;
+    }
+
+    MsgBroker broker;
+
+    std::vector<std::unique_ptr<ProducerReceiver>> receivers;
+    receivers.reserve(RECEIVER_COUNT);
+
+    for (int i = 0; i < RECEIVER_COUNT; ++i)
+    {
+        int topic = i + 1;
+        int udpPort = BASE_UDP_PORT + i;
+
+        auto receiver = std::make_unique<ProducerReceiver>(
+            topic,
+            udpPort,
+            &broker);
+
+        receiver->binding();
+        receiver->start();
+
+        receivers.push_back(std::move(receiver));
+    }
+
+    TcpQueryServer queryServer(TCP_PORT, &broker);
+
+    if (queryServer.binding() == false)
+    {
+        std::cerr << "TCP Query Server binding failed" << std::endl;
+        WSACleanup();
+        return -1;
+    }
+
+    queryServer.start();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    std::atomic<int> totalSendSuccessCount = 0;
+    std::atomic<int> totalSendFailCount = 0;
+
+    std::vector<std::thread> senderThreads;
+    senderThreads.reserve(RECEIVER_COUNT);
+
+    auto totalStartTime = std::chrono::high_resolution_clock::now();
+    auto sendStartTime = std::chrono::high_resolution_clock::now();
+
+    for (int i = 0; i < RECEIVER_COUNT; ++i)
+    {
+        int topic = i + 1;
+        int udpPort = BASE_UDP_PORT + i;
+
+        senderThreads.emplace_back(
+            sendUdpMessages,
+            udpPort,
+            topic,
+            MESSAGE_COUNT_PER_TOPIC,
+            PAYLOAD_SIZE,
+            std::ref(totalSendSuccessCount),
+            std::ref(totalSendFailCount));
+    }
+
+    for (auto& thread : senderThreads)
+    {
+        if (thread.joinable())
         {
-            ++queryFailCount;
+            thread.join();
         }
     }
 
-    auto queryEndTime = std::chrono::high_resolution_clock::now();
+    auto sendEndTime = std::chrono::high_resolution_clock::now();
 
-    double queryElapsedSec =
-        std::chrono::duration<double>(queryEndTime - queryStartTime).count();
+    double sendElapsedSec =
+        std::chrono::duration<double>(sendEndTime - sendStartTime).count();
 
-    closesocket(tcpClientSocket);
-    WSACleanup();
-
-    auto totalEndTime = std::chrono::high_resolution_clock::now();
-
-    double totalElapsedSec =
-        std::chrono::duration<double>(totalEndTime - totalStartTime).count();
+    int sendSuccessCount = totalSendSuccessCount.load(std::memory_order_relaxed);
+    int sendFailCount = totalSendFailCount.load(std::memory_order_relaxed);
 
     std::cout << "==============================" << std::endl;
-    std::cout << "TCP Query Complete" << std::endl;
-    std::cout << "Query Target: " << storedCount << std::endl;
-    std::cout << "Query Success: " << querySuccessCount << std::endl;
-    std::cout << "Query Fail: " << queryFailCount << std::endl;
-    std::cout << "Query Time: " << queryElapsedSec << " sec" << std::endl;
+    std::cout << "Multi UDP Send Complete" << std::endl;
+    std::cout << "Receiver Count: " << RECEIVER_COUNT << std::endl;
+    std::cout << "Send Success: " << sendSuccessCount << std::endl;
+    std::cout << "Send Fail: " << sendFailCount << std::endl;
+    std::cout << "Send Time: " << sendElapsedSec << " sec" << std::endl;
+    std::cout << "Send Rate: " << sendSuccessCount / sendElapsedSec << " msg/s" << std::endl;
 
-    if (queryElapsedSec > 0.0)
+    auto storeTimeoutStartTime = std::chrono::steady_clock::now();
+
+    while (broker.getStoredMessageCount() < static_cast<unsigned int>(sendSuccessCount) &&
+        std::chrono::steady_clock::now() - storeTimeoutStartTime < TEST_TIMEOUT)
     {
-        std::cout << "Query Rate: " << querySuccessCount / queryElapsedSec << " msg/s" << std::endl;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
+    unsigned int storedCount = broker.getStoredMessageCount();
+
     std::cout << "==============================" << std::endl;
-    std::cout << "Total Time: " << totalElapsedSec << " sec" << std::endl;
-    std::cout << "==============================" << std::endl;
+
+    if (storedCount == static_cast<unsigned int>(sendSuccessCount))
+    {
+        std::cout << "All received messages stored successfully." << std::endl;
+    }
+    else
+    {
+        std::cout << "Timeout reached." << std::endl;
+    }
+
+    std::cout << "Expected : " << sendSuccessCount << std::endl;
+    std::cout << "Stored   : " << storedCount << std::endl;
+    std::cout << "Lost     : " << sendSuccessCount - storedCount << std::endl;
+
+    int expectedPayloadSize =
+        PAYLOAD_SIZE + sizeof(uint16_t) + sizeof(uint16_t);
+
+
+    WSACleanup();
+
+    std::cout
+        << "=============================="
+        << std::endl;
+
+    unsigned int totalQuerySuccess = 0;
+    unsigned int totalQueryFail = 0;
+
+    for (int topic = 1;
+        topic <= RECEIVER_COUNT;
+        ++topic)
+    {
+        auto queryStartTime =
+            std::chrono::high_resolution_clock::now();
+
+        unsigned int successCount =
+            verifyTopic(
+                TCP_PORT,
+                topic,
+                MESSAGE_COUNT_PER_TOPIC,
+                expectedPayloadSize);
+
+        auto queryEndTime =
+            std::chrono::high_resolution_clock::now();
+
+        double queryElapsedSec =
+            std::chrono::duration<double>(
+                queryEndTime - queryStartTime).count();
+
+        unsigned int failCount =
+            MESSAGE_COUNT_PER_TOPIC - successCount;
+
+        totalQuerySuccess += successCount;
+        totalQueryFail += failCount;
+
+        std::cout
+            << "Topic "
+            << topic
+            << std::endl;
+
+        std::cout
+            << "  Success : "
+            << successCount
+            << std::endl;
+
+        std::cout
+            << "  Fail    : "
+            << failCount
+            << std::endl;
+
+        std::cout
+            << "  Rate    : "
+            << successCount / queryElapsedSec
+            << " msg/s"
+            << std::endl;
+
+        std::cout
+            << "------------------------------"
+            << std::endl;
+    }
+
+    std::cout
+        << "Total Query Success : "
+        << totalQuerySuccess
+        << std::endl;
+
+    std::cout
+        << "Total Query Fail : "
+        << totalQueryFail
+        << std::endl;
 
     return 0;
 }

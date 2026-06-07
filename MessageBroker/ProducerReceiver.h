@@ -11,7 +11,7 @@ class ProducerReceiver
 private: 
     static constexpr int INITIAL_BUFFER_COUNT = 2; /* 버퍼 풀 처리를 위해 최소 2개 보장 */
     static constexpr int MAX_BUFFER_COUNT = 32;
-    static constexpr int BLOCK_BUFFER_SIZE = 1024 * 1024 * 16;
+    static constexpr int BLOCK_BUFFER_SIZE = 1024 * 1024 * 8;
 
     static constexpr int FLUSH_MESSAGE_COUNT = 1000;
     static constexpr int FLUSH_TIMEOUT_MS = 10;

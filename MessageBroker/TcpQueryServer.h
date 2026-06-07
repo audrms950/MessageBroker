@@ -54,7 +54,6 @@ private:
 		2. 요청에서 토픽과 오프셋을 추출
 		3. MsgBroker에서 해당 토픽과 오프셋에 대한 메시지를 가져옴
 		4. 응답 헤더를 구성하여 클라이언트로 보냄 (sendAll로 고정된 크기의 데이터 송신 보장)
-        5. 
     */
     void clientWorker(SOCKET clientSocket);
 

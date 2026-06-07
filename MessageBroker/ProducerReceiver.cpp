@@ -43,6 +43,11 @@ ProducerReceiver::~ProducerReceiver()
         socketHandle = INVALID_SOCKET;
     }
 
+    while (hasProcessBuffer())
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
     for (auto& thread : runningThreads)
     {
         if (thread.joinable())
@@ -84,6 +89,8 @@ ProducerReceiver& ProducerReceiver::binding()
 
 void ProducerReceiver::start()
 {
+    running = true;
+
     std::thread receiveThread(&ProducerReceiver::th_recv, this, topic);
     std::thread processThread(&ProducerReceiver::th_worker, this);
 
@@ -97,7 +104,6 @@ void ProducerReceiver::th_recv(int topic)
     sockaddr_in clientAddress;
     int clientAddressSize = sizeof(clientAddress);
     unsigned int curOffset = sizeof(uint16_t);
-    running = true;
 
     socketoption();
 
@@ -170,12 +176,12 @@ void ProducerReceiver::th_recv(int topic)
 		}
     }
 
+    flushBuffer();
+
     std::cout
         << "[recv] packet count : "
         << totalRecvCount
         << std::endl;
-
-    flushBuffer();
 }
 
 bool ProducerReceiver::hasProcessBuffer()
@@ -198,23 +204,21 @@ void ProducerReceiver::th_worker()
                     return queue_process.empty() == false || running.load() == false;
                 });
 
-            if (queue_process.empty())
+            if (queue_process.empty() && running.load() == false)
             {
-                if (running.load() == false)
-                {
-                    break;
-                }
-
-                continue;
+                break;
             }
 
-            //std::cout << queue_process.size() << " buffers in process queue." << std::endl;
+            if (queue_process.empty())
+            {
+                continue;
+            }
 
             recvOb = std::move(queue_process.front());
             queue_process.pop();
         }
 
-        broker->pushBatch(1, recvOb->buffer, recvOb->usedSize);
+        broker->pushBatch(topic, recvOb->buffer, recvOb->usedSize);
 
         pushReadyBuffer(std::move(recvOb));
     }
@@ -222,7 +226,7 @@ void ProducerReceiver::th_worker()
 
 void ProducerReceiver::socketoption()
 {
-    int recvBufferSize = 1024 * 1024 * 64;
+    int recvBufferSize = 1024 * 1024 * 128;
 
     setsockopt(
         socketHandle,
