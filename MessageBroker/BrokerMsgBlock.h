@@ -14,7 +14,7 @@
 
 class BrokerMsgBlock
 {
-private:
+public:
     struct MsgIndex {
         unsigned int start_offset;   // 통버퍼 내에서의 시작 바이트 위치
         size_t length;        // 패킷의 순수 바이트 길이
@@ -49,6 +49,7 @@ public:
 
     /* 처리한 메시지 개수 반환 */
     int pushBatch(const std::vector<char>& data, const unsigned int used_buf_size, unsigned int& offset);
+
 public:
     inline bool isFull()
     {
@@ -61,6 +62,24 @@ public:
         std::shared_lock<std::shared_mutex> lock(smtx);
         return  start_msg_offset + cur_data_cnt;
     }
+
+    inline const MsgIndex* getMsgIndex(unsigned int idx)
+    {
+        std::shared_lock<std::shared_mutex> lock(smtx);
+        return &storage_idx[idx];
+    }
+
+	inline unsigned int getMsgCount()
+	{
+		std::shared_lock<std::shared_mutex> lock(smtx);
+		return cur_data_cnt;
+	}
+
+	inline const char* getStoragePtr()
+	{
+		std::shared_lock<std::shared_mutex> lock(smtx);
+		return (char*)storage.data();
+	}
 
 private: /* 프리미티브 -> NO (Check, lock) 위의 호출자에서 다 보장하고 오는 것을 전제로 구성  */
     inline void insert(const unsigned char* data, const unsigned int data_size)

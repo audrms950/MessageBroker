@@ -12,6 +12,7 @@
 #include <cstring>
 #include <memory>
 #include <atomic>
+#include <algorithm>
 
 #pragma comment(lib, "Ws2_32.lib")
 
@@ -25,6 +26,7 @@ struct TcpQueryRequest
 {
     uint32_t topic;
     uint32_t offset;
+    uint32_t count;
 };
 
 struct TcpQueryResponseHeader
@@ -140,12 +142,15 @@ void sendUdpMessages(
     closesocket(udpClientSocket);
 }
 
+
 int runTcpQueryTest(
     int tcpPort,
     int topic,
     unsigned int queryTarget,
     int expectedPayloadSize)
 {
+    constexpr unsigned int QUERY_BATCH_COUNT = 500;
+
     SOCKET tcpClientSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 
     if (tcpClientSocket == INVALID_SOCKET)
@@ -172,13 +177,18 @@ int runTcpQueryTest(
     }
 
     int querySuccessCount = 0;
+    bool disconnected = false;
 
-    for (unsigned int offset = 0; offset < queryTarget; ++offset)
+    for (unsigned int offset = 0; offset < queryTarget; offset += QUERY_BATCH_COUNT)
     {
+        unsigned int remainCount = queryTarget - offset;
+        unsigned int requestCount = min(QUERY_BATCH_COUNT, remainCount);
+
         TcpQueryRequest request;
 
         request.topic = htonl(static_cast<uint32_t>(topic));
         request.offset = htonl(offset);
+        request.count = htonl(requestCount);
 
         if (sendAll(
             tcpClientSocket,
@@ -188,36 +198,46 @@ int runTcpQueryTest(
             break;
         }
 
-        TcpQueryResponseHeader responseHeader;
-
-        if (recvAll(
-            tcpClientSocket,
-            reinterpret_cast<char*>(&responseHeader),
-            sizeof(responseHeader)) == false)
+        for (unsigned int i = 0; i < requestCount; ++i)
         {
-            break;
-        }
+            TcpQueryResponseHeader responseHeader;
 
-        uint32_t resultCode = ntohl(responseHeader.resultCode);
-        uint32_t payloadLength = ntohl(responseHeader.payloadLength);
-
-        std::vector<char> responsePayload(payloadLength);
-
-        if (payloadLength > 0)
-        {
             if (recvAll(
                 tcpClientSocket,
-                responsePayload.data(),
-                static_cast<int>(payloadLength)) == false)
+                reinterpret_cast<char*>(&responseHeader),
+                sizeof(responseHeader)) == false)
             {
+                disconnected = true;
                 break;
+            }
+
+            uint32_t resultCode = ntohl(responseHeader.resultCode);
+            uint32_t payloadLength = ntohl(responseHeader.payloadLength);
+
+            std::vector<char> responsePayload(payloadLength);
+
+            if (payloadLength > 0)
+            {
+                if (recvAll(
+                    tcpClientSocket,
+                    responsePayload.data(),
+                    static_cast<int>(payloadLength)) == false)
+                {
+                    disconnected = true;
+                    break;
+                }
+            }
+
+            if (resultCode == MsgBroker::code_ok &&
+                payloadLength == static_cast<uint32_t>(expectedPayloadSize))
+            {
+                ++querySuccessCount;
             }
         }
 
-        if (resultCode == MsgBroker::code_ok &&
-            payloadLength == expectedPayloadSize)
+        if (disconnected == true)
         {
-            ++querySuccessCount;
+            break;
         }
     }
 
@@ -382,6 +402,8 @@ int main()
 
     unsigned int totalQuerySuccess = 0;
     unsigned int totalQueryFail = 0;
+
+    
 
     for (int topic = 1;
         topic <= RECEIVER_COUNT;

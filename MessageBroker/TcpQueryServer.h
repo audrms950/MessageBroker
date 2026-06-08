@@ -29,6 +29,7 @@ public:
     {
         uint32_t topic;
         uint32_t offset;
+        uint32_t count;
     };
 
     struct QueryResponseHeader

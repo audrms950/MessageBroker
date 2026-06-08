@@ -126,40 +126,87 @@ void TcpQueryServer::clientWorker(SOCKET clientSocket)
     {
         QueryRequest request;
 
-        if (recvAll( clientSocket, reinterpret_cast<char*>(&request), sizeof(request)) == false ) break;
-
-        uint32_t topic = ntohl(request.topic);
-        uint32_t offset = ntohl(request.offset);
-
-        std::vector<unsigned char> outBuffer;
-
-        MsgBroker::code result =
-            broker->getMessage(
-                static_cast<int>(topic),
-                offset,
-                outBuffer);
-
-        QueryResponseHeader responseHeader;
-        responseHeader.resultCode = htonl(static_cast<uint32_t>(result));
-        responseHeader.payloadLength = htonl(static_cast<uint32_t>(outBuffer.size()));
-
-        if (sendAll(
-            clientSocket,
-            reinterpret_cast<const char*>(&responseHeader),
-            sizeof(responseHeader)) == false)
+        if (recvAll(clientSocket, reinterpret_cast<char*>(&request), sizeof(request)) == false)
         {
             break;
         }
 
-        if (result == MsgBroker::code_ok && outBuffer.empty() == false)
+        uint32_t topic = ntohl(request.topic);
+        uint32_t offset = ntohl(request.offset);
+		uint32_t count = ntohl(request.count);
+
+
+        
+        bool disconnected = false;
+        uint32_t endOffset = offset + count;
+
+        for (; offset < endOffset; ++offset)
         {
-            if (sendAll(
-                clientSocket,
-                reinterpret_cast<const char*>(outBuffer.data()),
-                static_cast<int>(outBuffer.size())) == false)
+
+            const char* outBufPtr = nullptr;
+            const BrokerMsgBlock::MsgIndex* outBufIdx = nullptr;
+
+            int result = broker->getMessage(
+                static_cast<int>(topic),
+                offset,
+                outBufPtr,
+                outBufIdx);
+
+            uint32_t payloadLength = 0;
+
+            if (result == MsgBroker::code_ok && outBufPtr != nullptr && outBufIdx != nullptr)
             {
+                payloadLength = static_cast<uint32_t>(outBufIdx->length);
+            }
+
+            QueryResponseHeader responseHeader;
+            responseHeader.resultCode = htonl(static_cast<uint32_t>(result));
+            responseHeader.payloadLength = htonl(payloadLength);
+#if(0) /*
+            묶어 보내는 방식은 구현은 쉽지만,
+            수신 측에서 전체 응답 크기를 사전에 알 수 없어 recvAll 기반 안정적인 수신이 어려움.
+            따라서 현재 구조에서는 header 수신 후 payloadLength 기준으로 payload를 분리 수신하는 방식을 유지
+        */
+            std::vector<char> sendBuffer;
+            sendBuffer.resize(sizeof(QueryResponseHeader) + payloadLength);
+
+            std::memcpy(sendBuffer.data(), &responseHeader, sizeof(responseHeader));
+            std::memcpy(
+                sendBuffer.data() + sizeof(responseHeader),
+                outBufPtr + outBufIdx->start_offset,
+                payloadLength);
+
+            if (sendAll(clientSocket, sendBuffer.data(), static_cast<int>(sendBuffer.size())) == false)
+            {
+                disconnected = true;
                 break;
             }
+#endif 
+            if (sendAll(
+                clientSocket,
+                reinterpret_cast<const char*>(&responseHeader),
+                sizeof(responseHeader)) == false)
+            {
+                disconnected = true;
+                break;
+            }
+
+            if (result == MsgBroker::code_ok && payloadLength != 0)
+            {
+                if (sendAll(
+                    clientSocket,
+                    outBufPtr + outBufIdx->start_offset,
+                    static_cast<int>(payloadLength)) == false)
+                {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+
+        if (disconnected == true)
+        {
+            break;
         }
     }
 

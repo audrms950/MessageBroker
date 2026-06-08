@@ -137,7 +137,8 @@ MsgBroker::code MsgBroker::getMessage(int topic, unsigned int offset, std::vecto
 
 	// 1. 읽을 때도 맵 조회를 위해 큰 락을 먼저 거치되, 검사 후 '즉시' 해제하여 병목 제거
 	std::shared_lock<std::shared_mutex> mgr_shared_lock(mtx_storage_lock);
-	if (deque_storage.find(topic) == deque_storage.end()) {
+	if (deque_storage.find(topic) == deque_storage.end()) 
+	{
 		return out_of_bound;
 	}
 	mgr_shared_lock.unlock(); // 검사 끝났으니 바로 풀어줌으로써 다른 스레드의 진입을 방해하지 않음
@@ -145,6 +146,48 @@ MsgBroker::code MsgBroker::getMessage(int topic, unsigned int offset, std::vecto
 	// 2. 이제 해당 토픽의 분할 락만 공유 락으로 잡고 안전하게 데이터를 읽음
 	std::shared_lock<std::shared_mutex> read_lock(*topicMtx);
 	return ref(topic, offset, out_buf);
+}
+
+int MsgBroker::getMessage(int topic, unsigned int offset, 
+	const char*& outBuf, const BrokerMsgBlock::MsgIndex*& bufIdx)
+{
+	outBuf = nullptr;
+	bufIdx = nullptr;
+
+	auto* topicMtx = getTopicMtx(topic);
+	if (topicMtx == nullptr)
+	{
+		return out_of_bound;
+	}
+
+	std::shared_lock<std::shared_mutex> mgrSharedLock(mtx_storage_lock);
+
+	if (deque_storage.find(topic) == deque_storage.end())
+	{
+		return out_of_bound;
+	}
+
+	mgrSharedLock.unlock();
+
+	std::shared_lock<std::shared_mutex> readLock(*topicMtx);
+
+	BrokerMsgBlock* block = findBlock(topic, offset);
+	if (block == nullptr)
+	{
+		return out_of_bound;
+	}
+
+	unsigned int blockOffset = offset - block->start_msg_offset;
+
+	if (block->getMsgCount() <= blockOffset)
+	{
+		return out_of_idx;
+	}
+
+	outBuf = reinterpret_cast<const char*>(block->getStoragePtr());
+	bufIdx = block->getMsgIndex(blockOffset);
+
+	return code_ok;
 }
 
 void MsgBroker::topicGarbageCollector()

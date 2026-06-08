@@ -14,6 +14,12 @@ private:
 	static constexpr int LOCK_COUNT = 64;
 
 public:
+	struct MessageRef
+	{
+		const unsigned char* data = nullptr;
+		unsigned int length = 0;
+	};
+
 	enum state
 	{
 		fail,
@@ -26,8 +32,9 @@ public:
 	{
 		batch_buf_out_of_bound = -1, /* 배치 버퍼 내부의 패킷이 블록보다 큼 */
 		batch_buf_size_min = -2, /* 배치 버퍼가 헤더보다 작음 */
-
 		batch_buf_error = -3,
+
+		out_of_idx = -4, /* 블록 내에서 메시지 인덱스가 범위를 벗어남 */
 	};
 
 	enum code
@@ -66,6 +73,7 @@ public:
 	void pushMessage(int topic, const std::vector<unsigned char>& data);
 	void pushBatch(int topic, const std::vector<char>& data, const unsigned int used_buf_size);
 	code getMessage(int topic, unsigned int offset, std::vector<unsigned char>& out_buf);
+	int getMessage(int topic, unsigned int offset, const char*& outBuf, const BrokerMsgBlock::MsgIndex*& bufIdx);
 
 private:
 	/* 토픽 garbege collector */
