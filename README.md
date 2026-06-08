@@ -2,7 +2,26 @@
 
 고성능 메시지 수신, 저장, 조회 구조를 직접 구현한 C++ 기반 Message Broker 학습 프로젝트입니다.
 
-단순히 `recv -> queue -> pop` 형태의 큐를 만드는 것이 아니라, 메시지 브로커를 Storage Engine 관점에서 설계하고 병목을 측정하면서 개선하는 것을 목표로 했습니다.
+## Development Motivation
+
+Kafka와 Redis 같은 고성능 메시징/저장 시스템이 왜 빠른지 공부한 후 직접 구성해보며 이해하고 싶었습니다.
+
+단순히 개념을 공부하는 것에서 그치지 않고, 실제로 성능에 영향을 주는 요소들을 직접 구현하고 측정해보기 위해 이 프로젝트를 시작했습니다.
+
+이 프로젝트의 목표는 상용 메시지 브로커를 대체하는 것이 아니라, 고성능 메시지 처리 구조의 핵심 원리를 직접 검증하는 것입니다.
+
+특히 다음 요소들이 실제 성능에 어떤 영향을 주는지 확인하는 데 집중했습니다.
+
+- 메시지 단건 처리와 배치 처리의 성능 차이
+- Queue 기반 구조와 연속 메모리 기반 Segment Storage 구조의 차이
+- 네트워크 수신 스레드와 저장 처리 스레드 분리 효과
+- Append-Only Storage 구조의 쓰기 성능
+- Offset 기반 조회 구조
+- Payload 복사 제거를 통한 Zero-Copy Read 효과
+- Topic별 Lock 분산을 통한 경합 완화
+
+그 결과, UDP 기반 메시지 수신, Buffer Pool, Batch Insert, Append-Only Segment Storage, TCP Batch Query, Zero-Copy Read 등을 직접 구현했고, 각 개선 단계의 성능을 측정하여 README에 기록했습니다.
+
 
 ## Key Features
 
